@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name diff_ppl)
+ (libraries diff_ppl.slice))
