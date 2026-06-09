@@ -38,7 +38,11 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
       let rec find_case cumulative_prob case_list =
         match case_list with
         | [] -> raise (RuntimeError "DistrCase: Random value exceeded total probability (should not happen)")
-        | (e, p) :: rest -> 
+        | (e, prob_e) :: rest ->
+            let p = match eval env prob_e with
+              | VFloat f -> f
+              | _ -> raise (RuntimeError "DistrCase: probability must evaluate to a float")
+            in
             let next_cumulative_prob = cumulative_prob +. p in
             if r <= next_cumulative_prob then eval env e
             else find_case next_cumulative_prob rest
@@ -212,6 +216,26 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
   | Unit -> VUnit
 
   | RuntimeError s -> raise (RuntimeError s)
+
+  | Add (e1, e2) -> arith_eval env e1 e2 (+.) "Add"
+  | Sub (e1, e2) -> arith_eval env e1 e2 (-.) "Sub"
+  | Mul (e1, e2) -> arith_eval env e1 e2 ( *. ) "Mul"
+  | Div (e1, e2) -> arith_eval env e1 e2 (/.) "Div"
+
+  | Cdf (dist_exp, e_point) ->
+      let dist = eval_dist env dist_exp in
+      let x = match eval env e_point with
+        | VFloat f -> f
+        | _ -> raise (RuntimeError "Cdf: point argument must be a float")
+      in
+      VFloat (Distributions.cdistr_cdf dist x)
+
+and arith_eval env e1 e2 op op_name =
+  let v1 = eval env e1 in
+  let v2 = eval env e2 in
+  (match v1, v2 with
+   | VFloat f1, VFloat f2 -> VFloat (op f1 f2)
+   | _ -> raise (RuntimeError (Printf.sprintf "Type error during evaluation: %s expects floats" op_name)))
 
 and eval_dist env dist_exp = 
   match dist_exp with

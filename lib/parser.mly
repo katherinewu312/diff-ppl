@@ -68,7 +68,7 @@ open Ast
 %type <Ast.expr list> expr_comma_list (* New type for list of expressions *)
 %type <unit> opt_bar
 %type <float> number
-%type <(Ast.expr * float) list> distr_cases
+%type <Ast.expr> arith_expr mul_expr
 
 (* Operator precedence and associativity from commit 23e2e6c *)
 %left ARROW             (* Function type arrow *)
@@ -135,16 +135,30 @@ not_expr:
 
 /* Comparison level */
 cmp_expr:
-  | cmp_expr LESS cons_expr     { ExprNode (Cmp (Lt, $1, $3, false)) }     (* Original < *)
-  | cmp_expr LESSEQ cons_expr   { ExprNode (Cmp (Le, $1, $3, false)) }     (* Original <= *)
-  | cmp_expr GREATER cons_expr  { ExprNode (Cmp (Lt, $3, $1, true)) }      (* Flipped > to < *)
-  | cmp_expr GREATEREQ cons_expr { ExprNode (Cmp (Le, $3, $1, true)) }     (* Flipped >= to <= *)
-  | cons_expr LT_HASH INT cons_expr { ExprNode (FinCmp (Lt, $1, $4, $3, false)) }   (* Original <#n *)
-  | cons_expr LEQ_HASH INT cons_expr { ExprNode (FinCmp (Le, $1, $4, $3, false)) }  (* Original <=#n *)
-  | cons_expr GT_HASH INT cons_expr { ExprNode (FinCmp (Lt, $4, $1, $3, true)) }    (* Flipped >#n to <#n *)
-  | cons_expr GEQ_HASH INT cons_expr { ExprNode (FinCmp (Le, $4, $1, $3, true)) }   (* Flipped >=#n to <=#n *)
-  | cons_expr EQ_HASH INT cons_expr { ExprNode (FinEq ($1, $4, $3)) }
-  | cons_expr { $1 }            /* Fallthrough to cons_expr */
+  | cmp_expr LESS arith_expr     { ExprNode (Cmp (Lt, $1, $3, false)) }     (* Original < *)
+  | cmp_expr LESSEQ arith_expr   { ExprNode (Cmp (Le, $1, $3, false)) }     (* Original <= *)
+  | cmp_expr GREATER arith_expr  { ExprNode (Cmp (Lt, $3, $1, true)) }      (* Flipped > to < *)
+  | cmp_expr GREATEREQ arith_expr { ExprNode (Cmp (Le, $3, $1, true)) }     (* Flipped >= to <= *)
+  | arith_expr LT_HASH INT arith_expr { ExprNode (FinCmp (Lt, $1, $4, $3, false)) }   (* Original <#n *)
+  | arith_expr LEQ_HASH INT arith_expr { ExprNode (FinCmp (Le, $1, $4, $3, false)) }  (* Original <=#n *)
+  | arith_expr GT_HASH INT arith_expr { ExprNode (FinCmp (Lt, $4, $1, $3, true)) }    (* Flipped >#n to <#n *)
+  | arith_expr GEQ_HASH INT arith_expr { ExprNode (FinCmp (Le, $4, $1, $3, true)) }   (* Flipped >=#n to <=#n *)
+  | arith_expr EQ_HASH INT arith_expr { ExprNode (FinEq ($1, $4, $3)) }
+  | arith_expr { $1 }            /* Fallthrough to arith_expr */
+  ;
+
+/* Additive arithmetic on float-typed expressions (left assoc) */
+arith_expr:
+  | arith_expr PLUS mul_expr  { ExprNode (Add ($1, $3)) }
+  | arith_expr MINUS mul_expr { ExprNode (Sub ($1, $3)) }
+  | mul_expr { $1 }
+  ;
+
+/* Multiplicative arithmetic (left assoc) */
+mul_expr:
+  | mul_expr TIMES cons_expr  { ExprNode (Mul ($1, $3)) }
+  | mul_expr DIVIDE cons_expr { ExprNode (Div ($1, $3)) }
+  | cons_expr { $1 }
   ;
 
 /* Cons level (right-associative) */
@@ -178,17 +192,13 @@ atomic_expr:
   | k = INT HASH n = INT
     { if k < 0 || k >= n then failwith (Printf.sprintf "Invalid FinConst: %d#%d" k n) else ExprNode (FinConst (k, n)) }
   | x = IDENT                 { ExprNode (Var x) }
-  | DISCRETE LPAREN probs = separated_nonempty_list(COMMA, number) RPAREN
-    { 
-      (* New syntax: discrete(p1, p2, ...) returns Fin values *)
+  | DISCRETE LPAREN probs = separated_nonempty_list(COMMA, expr) RPAREN
+    {
+      (* Syntax: discrete(p1, p2, ...) where each pi is a
+         probability expression; the i-th branch is the value i#n. *)
       let n = List.length probs in
       let cases = List.mapi (fun i p -> (ExprNode (FinConst (i, n)), p)) probs in
       ExprNode (DistrCase cases)
-    }
-  | DISCRETE LPAREN cases = distr_cases RPAREN
-    { 
-      (* Old syntax: discrete(p1: e1, p2: e2, ...) - keeping for backward compatibility *)
-      ExprNode (DistrCase cases) 
     }
   | UNIFORM LPAREN lo = app_expr COMMA hi = app_expr RPAREN
     { ExprNode (Sample (Distr2 (DUniform, lo, hi))) }
@@ -247,17 +257,6 @@ opt_bar:
   | /* empty */ { () }
   | BAR         { () }
   ;
-
-/* Rule for parsing the (expr : number) pairs for DistrCase - keeping for backward compatibility */ 
-distr_cases:
-  | /* empty */ { [] } 
-  | cases = separated_nonempty_list(COMMA, distr_case) { cases }
-  ;
-
-distr_case:
-  | p = number COLON e = expr { (e, p) }
-  ;
-
 
 number:
   | f = FLOAT { f }

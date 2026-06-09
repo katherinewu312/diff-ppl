@@ -5,27 +5,39 @@ open Lats
 
 module StringMap = Map.Make(String)
 
+(* Pretty-print an [expr] to a canonical string with no ANSI color
+   codes.  Used as the identity for entries in [SymSet]. *)
+let canonical_string_of_expr (e : expr) : string =
+  Pretty.string_of_expr_plain e
+
+(* Helper to construct a sym-bag containing a single symbolic
+   expression. *)
+let singleton_sym_bag (e : expr) : SymLat.bag =
+  let s = canonical_string_of_expr e in
+  SymLat.create (Finite (SymSet.singleton (s, e)))
+
 (* Enforce t_sub is a subtype of t_super *)
 let rec sub_type (t_sub : ty) (t_super : ty) : unit =
   match Ast.force t_sub, Ast.force t_super with
   (* Base Cases *)
   | TBool,    TBool      -> ()
-  | TFin n1, TFin n2 when n1 = n2 -> () 
+  | TFin n1, TFin n2 when n1 = n2 -> ()
   | TUnit, TUnit -> ()
   (* Structural Cases *)
-  | TFloat (b1, c1), TFloat (b2, c2) -> 
-      Lats.CutLat.eq b1 b2;  (* Bounds must be consistent *) 
-      Lats.FloatLat.leq c1 c2  (* Constants flow sub -> super *) 
-  | TPair(a1, b1), TPair(a2, b2) -> 
-      sub_type a1 a2; (* Covariant *) 
-      sub_type b1 b2  (* Covariant *) 
-  | TFun(a1, b1), TFun(a2, b2) -> 
-      sub_type a2 a1; (* Contravariant argument *) 
-      sub_type b1 b2  (* Covariant result *) 
-  | TList t1, TList t2 -> sub_type t1 t2 (* Covariant *) 
-  | TRef t1, TRef t2 -> unify t1 t2 (* Invariant *)
+  | TFloat (b1, c1, s1), TFloat (b2, c2, s2) ->
+      Ast.CutLat.eq b1 b2;     (* Cuts must agree *)
+      Lats.FloatLat.leq c1 c2; (* Concrete constants flow sub -> super *)
+      Ast.SymLat.leq s1 s2     (* Symbolic values flow sub -> super *)
+  | TPair(a1, b1), TPair(a2, b2) ->
+      sub_type a1 a2;
+      sub_type b1 b2
+  | TFun(a1, b1), TFun(a2, b2) ->
+      sub_type a2 a1;
+      sub_type b1 b2
+  | TList t1, TList t2 -> sub_type t1 t2
+  | TRef t1, TRef t2 -> unify t1 t2
   | TMeta r, _ ->
-    (match Ast.force t_super with (* Ensure t_super is forced *)
+    (match Ast.force t_super with
     | TMeta r' -> (Ast.listen r (fun t -> sub_type t t_super); Ast.listen r' (fun t' -> sub_type t_sub t'))
     | TBool -> Ast.assign r TBool
     | TFin n -> Ast.assign r (TFin n)
@@ -33,16 +45,19 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
     | TFun (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TFun (a_meta, b_meta)); sub_type t_sub t_super
-    | TFloat (_, _) -> let b_bag = Lats.fresh_cut_bag () in let c_bag = Lats.fresh_float_bag () in
-      Ast.assign r (TFloat (b_bag, c_bag)); sub_type t_sub t_super
-    | TUnit -> Ast.assign r TUnit (* Handle TUnit for t_super *)
-    | TList _ -> let elem_meta = Ast.fresh_meta () in 
+    | TFloat (_, _, _) ->
+      let b_bag = Ast.fresh_cut_bag () in
+      let c_bag = Lats.fresh_float_bag () in
+      let s_bag = Ast.fresh_sym_bag () in
+      Ast.assign r (TFloat (b_bag, c_bag, s_bag)); sub_type t_sub t_super
+    | TUnit -> Ast.assign r TUnit
+    | TList _ -> let elem_meta = Ast.fresh_meta () in
                  Ast.assign r (TList elem_meta); sub_type t_sub t_super
     | TRef _ -> let ref_meta = Ast.fresh_meta () in
                 Ast.assign r (TRef ref_meta); sub_type t_sub t_super
     )
   | _, TMeta r ->
-    (match Ast.force t_sub with (* Ensure t_sub is forced *)
+    (match Ast.force t_sub with
     | TMeta r' -> (Ast.listen r (fun t -> sub_type t_sub t); Ast.listen r' (fun t' -> sub_type t_sub t'))
     | TBool -> Ast.assign r TBool
     | TFin n -> Ast.assign r (TFin n)
@@ -50,50 +65,84 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
     | TFun (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TFun (a_meta, b_meta)); sub_type t_sub t_super
-    | TFloat (_, _) -> let b_bag = Lats.fresh_cut_bag () in let c_bag = Lats.fresh_float_bag () in
-      Ast.assign r (TFloat (b_bag, c_bag)); sub_type t_sub t_super
-    | TUnit -> Ast.assign r TUnit (* Handle TUnit for t_sub *)
-    | TList _ -> let elem_meta = Ast.fresh_meta () in 
+    | TFloat (_, _, _) ->
+      let b_bag = Ast.fresh_cut_bag () in
+      let c_bag = Lats.fresh_float_bag () in
+      let s_bag = Ast.fresh_sym_bag () in
+      Ast.assign r (TFloat (b_bag, c_bag, s_bag)); sub_type t_sub t_super
+    | TUnit -> Ast.assign r TUnit
+    | TList _ -> let elem_meta = Ast.fresh_meta () in
                  Ast.assign r (TList elem_meta); sub_type t_sub t_super
     | TRef _ -> let ref_meta = Ast.fresh_meta () in
                 Ast.assign r (TRef ref_meta); sub_type t_sub t_super
     )
-  (* Error Case *) 
-  | _, _ -> 
+  (* Error Case *)
+  | _, _ ->
       let msg = Printf.sprintf "Type mismatch: cannot subtype %s <: %s"
         (Pretty.string_of_ty t_sub) (Pretty.string_of_ty t_super)
       in
       failwith msg
 
-(* Unification: enforce t1 = t2 by bidirectional subtyping *) 
 and unify (t1 : ty) (t2 : ty) : unit =
-  try 
-    sub_type t1 t2; 
+  try
+    sub_type t1 t2;
     sub_type t2 t1
-  with Failure msg -> 
-    (* Provide a unification-specific error message *)
+  with Failure msg ->
     let unified_msg = Printf.sprintf "Type mismatch: cannot unify %s and %s\n(Subtyping error: %s)"
       (Pretty.string_of_ty t1) (Pretty.string_of_ty t2) msg
     in
     failwith unified_msg
 
-(* Type inference and elaboration: expr -> texpr, generating bag constraints and performing type checking *)
+(* Construct a fresh TFloat for an arithmetic result whose value is
+   represented by the symbolic expression [orig_expr] (the original
+   surface-syntax form). *)
+let arith_result_ty (orig_expr : expr) : ty =
+  let cuts_bag = Ast.fresh_cut_bag () in
+  let floats_bag = Lats.fresh_float_bag () in (* empty: value is symbolic *)
+  let sym_bag = singleton_sym_bag orig_expr in
+  TFloat (cuts_bag, floats_bag, sym_bag)
+
+(* Add a single symbolic-expression cut to a cut bag (only if the
+   bag is currently finite and the cut is not already present). *)
+let add_sym_cut_to_bag (b_meta : Ast.CutLat.bag) (cuts : Ast.CutSet.t) : unit =
+  match Ast.CutLat.get b_meta with
+  | Top -> ()
+  | Finite current ->
+    let merged = Ast.CutSet.union current cuts in
+    if not (Ast.CutSet.equal current merged) then
+      let temp = Ast.CutLat.create (Finite merged) in
+      Ast.CutLat.leq temp b_meta
+
+(* Build a symbolic cut value from an expr.  Falls back to constant
+   when the expr is a [Const]. *)
+let sym_cut_val_of_expr (e : expr) : cut_val =
+  match e with
+  | ExprNode (Const f) -> CVConst f
+  | _ -> CVSym (canonical_string_of_expr e, e)
+
+(* Type inference and elaboration: expr -> texpr *)
 let infer (e : expr) : texpr =
-  let rec aux (env : ty StringMap.t) (ExprNode e_node : expr) : texpr =
+  let rec aux (env : ty StringMap.t) (orig_expr : expr) : texpr =
+    let ExprNode e_node = orig_expr in
     match e_node with
-    | Const f -> 
-      (* Constant float: Create bag refs *) 
-      let cuts_bag_ref = Lats.CutLat.create (Finite CutSet.empty) in 
+    | Const f ->
+      let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
       let consts_bag_ref = Lats.FloatLat.create (Finite (FloatSet.singleton f)) in
-      (TFloat (cuts_bag_ref, consts_bag_ref), TAExprNode (Const f))
+      let sym_bag_ref = Ast.SymLat.create (Finite Ast.SymSet.empty) in
+      (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Const f))
     | BoolConst b ->
       (TBool, TAExprNode (BoolConst b))
     | Var x ->
-      (try 
+      (try
         let ty = StringMap.find x env in
         (ty, TAExprNode (Var x))
-       with Not_found -> 
-        failwith ("Unbound variable: " ^ x))
+       with Not_found ->
+        (* Free variables are treated as symbolic floats whose only
+           reachable value is the variable itself. *)
+        let cuts_bag = Ast.fresh_cut_bag () in
+        let floats_bag = Lats.fresh_float_bag () in
+        let sym_bag = singleton_sym_bag (ExprNode (Var x)) in
+        (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Var x)))
 
     | Let (x, e1, e2) ->
       let t1, a1 = aux env e1 in
@@ -101,77 +150,92 @@ let infer (e : expr) : texpr =
       let t2, a2 = aux env' e2 in
       (t2, TAExprNode (Let (x, (t1,a1), (t2,a2))))
 
-    | Sample dist_exp ->
-      let cuts_bag_ref = Lats.CutLat.create (Finite CutSet.empty) in 
-      let consts_bag_ref = Lats.FloatLat.create Top in 
+    | Add (e1, e2) -> arith_aux env orig_expr e1 e2 "Add" (fun a b -> Add (a, b))
+    | Sub (e1, e2) -> arith_aux env orig_expr e1 e2 "Sub" (fun a b -> Sub (a, b))
+    | Mul (e1, e2) -> arith_aux env orig_expr e1 e2 "Mul" (fun a b -> Mul (a, b))
+    | Div (e1, e2) -> arith_aux env orig_expr e1 e2 "Div" (fun a b -> Div (a, b))
 
-      (* Helper to propagate float constants from an argument to its own bound bag *)
-      let add_floats_to_cutbag (float_bag : FloatLat.bag) (cut_bag : CutLat.bag) =
+    | Cdf _ ->
+      (* CDF nodes are emitted by the discretizer; they should not
+         appear in surface programs.  Treat as a symbolic float for
+         completeness. *)
+      let cuts_bag = Ast.fresh_cut_bag () in
+      let floats_bag = Lats.fresh_float_bag () in
+      let sym_bag = singleton_sym_bag orig_expr in
+      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Const 0.0))
+
+    | Sample dist_exp ->
+      let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
+      let consts_bag_ref = Lats.FloatLat.create Top in
+      let sym_bag_ref = Ast.SymLat.create (Finite Ast.SymSet.empty) in
+
+      let add_floats_to_cutbag (float_bag : FloatLat.bag) (cut_bag : Ast.CutLat.bag) =
         let listener () =
           let v = Lats.FloatLat.get float_bag in
           (match v with
-          | Finite s -> Lats.CutLat.add_all s cut_bag
-            | Top -> Lats.CutLat.leq (Lats.CutLat.create Top) cut_bag)
+          | Finite s -> Ast.CutLat.add_all s cut_bag
+            | Top -> Ast.CutLat.leq (Ast.CutLat.create Top) cut_bag)
         in
         Lats.FloatLat.listen float_bag listener
       in
 
-      (* Helper to make the output distribution's bound bag Top if any input's bound bag becomes Top *)
       let make_output_top_if_input_boundbag_is_top input_cut_bag =
         let listener () =
-          let v = Lats.CutLat.get input_cut_bag in
+          let v = Ast.CutLat.get input_cut_bag in
           (match v with
-          | Top -> Lats.CutLat.leq (Lats.CutLat.create Top) cuts_bag_ref (* cuts_bag_ref is from Sample scope *)
+          | Top -> Ast.CutLat.leq (Ast.CutLat.create Top) cuts_bag_ref
           | _ -> ())
         in
-        Lats.CutLat.listen input_cut_bag listener
+        Ast.CutLat.listen input_cut_bag listener
       in
 
-      (* Helper to make an input's bound bag Top if the output distribution's bound bag becomes Top *)
       let make_input_top_if_output_boundbag_is_top input_cut_bag output_cut_bag =
         let listener () =
-          let v = Lats.CutLat.get output_cut_bag in
+          let v = Ast.CutLat.get output_cut_bag in
           (match v with
-          | Top -> Lats.CutLat.leq (Lats.CutLat.create Top) input_cut_bag
+          | Top -> Ast.CutLat.leq (Ast.CutLat.create Top) input_cut_bag
           | _ -> ())
         in
-        Lats.CutLat.listen output_cut_bag listener
+        Ast.CutLat.listen output_cut_bag listener
       in
 
       (match dist_exp with
       | Distr1 (dist_kind, arg_e) ->
           let t_arg, a_arg = aux env arg_e in
-          let t_arg_cut_bag = Lats.fresh_cut_bag () in
+          let t_arg_cut_bag = Ast.fresh_cut_bag () in
           let t_arg_float_bag = Lats.fresh_float_bag () in
-          (try unify t_arg (Ast.TFloat (t_arg_cut_bag, t_arg_float_bag))
-           with Failure msg -> 
-            let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr1 (dist_kind, arg_e)))) in 
+          let t_arg_sym_bag = Ast.fresh_sym_bag () in
+          (try unify t_arg (Ast.TFloat (t_arg_cut_bag, t_arg_float_bag, t_arg_sym_bag))
+           with Failure msg ->
+            let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr1 (dist_kind, arg_e)))) in
             failwith (Printf.sprintf "Type error in Sample (%s) argument: %s" kind_str msg));
-          
+
           add_floats_to_cutbag t_arg_float_bag t_arg_cut_bag;
           make_output_top_if_input_boundbag_is_top t_arg_cut_bag;
           make_input_top_if_output_boundbag_is_top t_arg_cut_bag cuts_bag_ref;
 
           let dist_exp' = Distr1 (dist_kind, (t_arg, a_arg)) in
-          (TFloat (cuts_bag_ref, consts_bag_ref), TAExprNode (Sample dist_exp'))
+          (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Sample dist_exp'))
 
       | Distr2 (dist_kind, arg1_e, arg2_e) ->
         let t1, a1 = aux env arg1_e in
         let t2, a2 = aux env arg2_e in
-        let t1_cut_bag = Lats.fresh_cut_bag () in
+        let t1_cut_bag = Ast.fresh_cut_bag () in
         let t1_float_bag = Lats.fresh_float_bag () in
-        let t2_cut_bag = Lats.fresh_cut_bag () in
+        let t1_sym_bag = Ast.fresh_sym_bag () in
+        let t2_cut_bag = Ast.fresh_cut_bag () in
         let t2_float_bag = Lats.fresh_float_bag () in
+        let t2_sym_bag = Ast.fresh_sym_bag () in
 
-        (try unify t1 (Ast.TFloat (t1_cut_bag, t1_float_bag))
-         with Failure msg -> 
+        (try unify t1 (Ast.TFloat (t1_cut_bag, t1_float_bag, t1_sym_bag))
+         with Failure msg ->
           let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr2 (dist_kind, arg1_e, arg2_e)))) in
           failwith (Printf.sprintf "Type error in Sample (%s) first argument: %s" kind_str msg));
-        (try unify t2 (Ast.TFloat (t2_cut_bag, t2_float_bag))
-         with Failure msg -> 
+        (try unify t2 (Ast.TFloat (t2_cut_bag, t2_float_bag, t2_sym_bag))
+         with Failure msg ->
           let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr2 (dist_kind, arg1_e, arg2_e)))) in
           failwith (Printf.sprintf "Type error in Sample (%s) second argument: %s" kind_str msg));
-        
+
         add_floats_to_cutbag t1_float_bag t1_cut_bag;
         add_floats_to_cutbag t2_float_bag t2_cut_bag;
 
@@ -182,120 +246,140 @@ let infer (e : expr) : texpr =
         make_input_top_if_output_boundbag_is_top t2_cut_bag cuts_bag_ref;
 
         let dist_exp' = Distr2 (dist_kind, (t1, a1), (t2, a2)) in
-        (TFloat (cuts_bag_ref, consts_bag_ref), TAExprNode (Sample dist_exp'))
+        (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Sample dist_exp'))
       )
-      
+
     | DistrCase cases ->
       if cases = [] then failwith "DistrCase cannot be empty";
-      (* Check probabilities sum to 1 *) 
-      let probs = List.map snd cases in
-      let sum = List.fold_left (+.) 0.0 probs in
-      if abs_float (sum -. 1.0) > 0.0001 then
-        failwith (Printf.sprintf "DistrCase probabilities must sum to 1.0, got %f" sum);
-      
-      (* Type-check all expressions and subtype them into a fresh result type *) 
-      let typed_cases = List.map (fun (e, p) -> (aux env e, p)) cases in
-      let result_ty = Ast.fresh_meta () in (* Fresh meta for the result *) 
-      List.iter (fun ((branch_ty, _), _) -> 
-        try sub_type branch_ty result_ty (* Enforce branch <: result *)
-        with Failure msg -> failwith ("Type error in DistrCase branches: " ^ msg)
-      ) typed_cases;
-      
-      let annotated_cases = List.map (fun (texpr, prob) -> (texpr, prob)) typed_cases in
-      (result_ty, TAExprNode (DistrCase annotated_cases))
+      (* Type-check probability expressions (must be float) and
+         branch expressions; subtype branches into a fresh result. *)
+      let result_ty = Ast.fresh_meta () in
+      let typed_cases = List.map (fun (branch, prob) ->
+        let tb, ab = aux env branch in
+        (try sub_type tb result_ty
+         with Failure msg -> failwith ("Type error in DistrCase branches: " ^ msg));
+        let tp, ap = aux env prob in
+        (* Probability must be a float (concrete or symbolic).
+           We don't check sum-to-one when probabilities are
+           symbolic. *)
+        let pf_cuts = Ast.fresh_cut_bag () in
+        let pf_floats = Lats.fresh_float_bag () in
+        let pf_sym = Ast.fresh_sym_bag () in
+        (try sub_type tp (TFloat (pf_cuts, pf_floats, pf_sym))
+         with Failure msg -> failwith ("Type error in DistrCase probability: " ^ msg));
+        ((tb, ab), (tp, ap))
+      ) cases in
+      (result_ty, TAExprNode (DistrCase typed_cases))
 
     | Cmp (cmp_op, e1, e2, flipped) ->
         let t1, a1 = aux env e1 in
         let t2, a2 = aux env e2 in
-        let b_meta = Lats.fresh_cut_bag () in (* Shared bound bag for unification *)
+        let b_meta = Ast.fresh_cut_bag () in
         let c_meta1 = Lats.fresh_float_bag () in
         let c_meta2 = Lats.fresh_float_bag () in
-        (try unify t1 (Ast.TFloat (b_meta, c_meta1)) (* Unify t1 with TFloat(b_meta, c1) *)
+        let s_meta1 = Ast.fresh_sym_bag () in
+        let s_meta2 = Ast.fresh_sym_bag () in
+        (try unify t1 (Ast.TFloat (b_meta, c_meta1, s_meta1))
          with Failure msg -> failwith (Printf.sprintf "Type error in comparison left operand: %s" msg));
-        (try unify t2 (Ast.TFloat (b_meta, c_meta2)) (* Unify t2 with TFloat(b_meta, c2) *)
+        (try unify t2 (Ast.TFloat (b_meta, c_meta2, s_meta2))
          with Failure msg -> failwith (Printf.sprintf "Type error in comparison right operand: %s" msg));
 
-        (* Nested listener logic for comparison *) 
-        let listener () = (* Listener takes unit *)
-          let v1 = Lats.FloatLat.get c_meta1 in (* Get value inside listener *)
-          let v2 = Lats.FloatLat.get c_meta2 in (* Get value inside listener *)
+        (* Listener: when either side's float bag or sym bag
+           changes, recompute the cuts contributed by both sides
+           and add them to the shared bound bag. *)
+        let listener () =
+          let v1 = Lats.FloatLat.get c_meta1 in
+          let v2 = Lats.FloatLat.get c_meta2 in
+          let sv1 = Ast.SymLat.get s_meta1 in
+          let sv2 = Ast.SymLat.get s_meta2 in
+          let any_top = (v1 = Top) || (v2 = Top) in
+          let both_finite_constants = (not any_top) && (sv1 = Finite Ast.SymSet.empty) && (sv2 = Finite Ast.SymSet.empty) in
           match v1, v2 with
-          | Top, Top ->
-              (* Both Top -> BoundBag should be Top *) 
-              Lats.CutLat.leq (Lats.CutLat.create Top) b_meta
-          | Finite _, Finite s2 ->
-              (* Both are not Top. This means that e2 is being compared to a discrete distribution. *)
-              (* Only collect the cuts from the right bag, the constant itself *)
-              (* Temporarily store cuts to add *)
-              let cuts_to_add = ref Lats.CutSet.empty in
-
-              FloatSet.iter (fun f -> 
-                let cut = match cmp_op with
-                  | Ast.Lt -> Lats.Less f
-                  | Ast.Le -> Lats.LessEq f
-                in
-                cuts_to_add := Lats.CutSet.add cut !cuts_to_add
-              ) s2;
-
-              (* Apply collected cuts to b_meta *) 
-              (match Lats.CutLat.get b_meta with
-              | Top -> ()  (* Cannot add to Top *) 
-              | Finite current_set ->
-                  let new_set = Lats.CutSet.union current_set !cuts_to_add in
-                  if not (Lats.CutSet.equal current_set new_set) then
-                    let temp_finite_bag = Lats.CutLat.create (Finite new_set) in
-                    Lats.CutLat.leq temp_finite_bag b_meta
-              )
-          | _, _ ->
-              (* Only one is Top. This means that e2 is being compared to a continuous distribution. *)
-              (* Add cuts from Finite bags. *)
-              (* Temporarily store cuts to add *) 
-              let cuts_to_add = ref Lats.CutSet.empty in
-
-              (* Collect cuts from right bag (c_meta2) *) 
+          | Top, Top when sv1 = Finite Ast.SymSet.empty && sv2 = Finite Ast.SymSet.empty ->
+              (* Both totally unknown -> BoundBag becomes Top *)
+              Ast.CutLat.leq (Ast.CutLat.create Top) b_meta
+          | _ when both_finite_constants ->
+              (* Both sides are finite sets of concrete constants.
+                 This is the "discrete-vs-discrete" case from the
+                 original code: only collect cuts from the right
+                 bag, treated as the constant. *)
               (match v2 with
                | Finite s2 ->
-                   FloatSet.iter (fun f -> 
-                     let cut = match cmp_op with
-                       | Ast.Lt -> Lats.Less f
-                       | Ast.Le -> Lats.LessEq f
-                     in
-                     cuts_to_add := Lats.CutSet.add cut !cuts_to_add
-                   ) s2
-               | Top -> ()
-              );
+                 let cuts_to_add = ref Ast.CutSet.empty in
+                 FloatSet.iter (fun f ->
+                   let cv = CVConst f in
+                   let cut = match cmp_op with
+                     | Ast.Lt -> Less cv
+                     | Ast.Le -> LessEq cv
+                   in
+                   cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                 ) s2;
+                 add_sym_cut_to_bag b_meta !cuts_to_add
+               | Top -> ())
+          | _ ->
+              (* The general "continuous-vs-continuous" or
+                 "continuous-vs-symbolic-or-constant" case:
+                 collect cuts from both sides (with appropriate
+                 op flipping for the LHS). *)
+              let cuts_to_add = ref Ast.CutSet.empty in
 
-              (* Collect cuts from left bag (c_meta1) *) 
+              (* RHS contributions: concrete floats and symbolic
+                 values are added with the original op. *)
+              (match v2 with
+               | Finite s2 ->
+                   FloatSet.iter (fun f ->
+                     let cut = match cmp_op with
+                       | Ast.Lt -> Less (CVConst f)
+                       | Ast.Le -> LessEq (CVConst f)
+                     in
+                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                   ) s2
+               | Top -> ());
+              (match sv2 with
+               | Finite ss2 ->
+                   Ast.SymSet.iter (fun (_, e) ->
+                     let cv = sym_cut_val_of_expr e in
+                     let cut = match cmp_op with
+                       | Ast.Lt -> Less cv
+                       | Ast.Le -> LessEq cv
+                     in
+                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                   ) ss2
+               | Top -> ());
+
+              (* LHS contributions: same floats/syms but with the
+                 dual operator (e1 < f iff not (f <= e1)). *)
               (match v1 with
                | Finite s1 ->
-                   FloatSet.iter (fun f -> 
+                   FloatSet.iter (fun f ->
                      let cut = match cmp_op with
-                       | Ast.Lt -> Lats.LessEq f
-                       | Ast.Le -> Lats.Less f
+                       | Ast.Lt -> LessEq (CVConst f)
+                       | Ast.Le -> Less (CVConst f)
                      in
-                     cuts_to_add := Lats.CutSet.add cut !cuts_to_add
+                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
                    ) s1
-               | Top -> ()
-              );
+               | Top -> ());
+              (match sv1 with
+               | Finite ss1 ->
+                   Ast.SymSet.iter (fun (_, e) ->
+                     let cv = sym_cut_val_of_expr e in
+                     let cut = match cmp_op with
+                       | Ast.Lt -> LessEq cv
+                       | Ast.Le -> Less cv
+                     in
+                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                   ) ss1
+               | Top -> ());
 
-              (* Apply collected cuts to b_meta *) 
-              if not (Lats.CutSet.is_empty !cuts_to_add) then
-                let current_cut_val = Lats.CutLat.get b_meta in
-                match current_cut_val with
-                | Top -> () (* Cannot add to Top *) 
-                | Finite current_set ->
-                    let new_set = Lats.CutSet.union current_set !cuts_to_add in
-                    if not (Lats.CutSet.equal current_set new_set) then (
-                       (* Update using temporary bag and leq *) 
-                       let temp_finite_bag = Lats.CutLat.create (Finite new_set) in
-                       Lats.CutLat.leq temp_finite_bag b_meta
-                    )
+              if not (Ast.CutSet.is_empty !cuts_to_add) then
+                add_sym_cut_to_bag b_meta !cuts_to_add
         in
-        (* Register the combined listener on both float bags *) 
         Lats.FloatLat.listen c_meta1 listener;
         Lats.FloatLat.listen c_meta2 listener;
+        Ast.SymLat.listen s_meta1 listener;
+        Ast.SymLat.listen s_meta2 listener;
 
-        (TBool, TAExprNode (Cmp (cmp_op, (t1,a1), (t2,a2), flipped))) (* Result is TBool, preserve flip flag *)
+        (TBool, TAExprNode (Cmp (cmp_op, (t1,a1), (t2,a2), flipped)))
 
     | FinCmp (cmp_op, e1, e2, n, flipped) ->
       if n <= 0 then failwith (Printf.sprintf "Invalid FinCmp modulus: ==#%d. n must be > 0." n);
@@ -310,76 +394,71 @@ let infer (e : expr) : texpr =
 
     | If (e1, e2, e3) ->
       let t1, a1 = aux env e1 in
-      (try sub_type t1 Ast.TBool (* Condition must be bool *) 
+      (try sub_type t1 Ast.TBool
        with Failure msg -> failwith ("Type error in If condition: " ^ msg));
       let t2, a2 = aux env e2 in
       let t3, a3 = aux env e3 in
-      let result_ty = Ast.fresh_meta () in (* Fresh meta for the result *) 
-      (try 
-         sub_type t2 result_ty; (* Enforce true_branch <: result *) 
-         sub_type t3 result_ty  (* Enforce false_branch <: result *) 
-       with Failure msg -> failwith ("Type error in If branches: " ^ msg)); 
+      let result_ty = Ast.fresh_meta () in
+      (try
+         sub_type t2 result_ty;
+         sub_type t3 result_ty
+       with Failure msg -> failwith ("Type error in If branches: " ^ msg));
       (result_ty, TAExprNode (If ((t1,a1), (t2,a2), (t3,a3))))
-      
+
     | Pair (e1, e2) ->
       let t1, a1 = aux env e1 in
       let t2, a2 = aux env e2 in
       (TPair (t1, t2), TAExprNode (Pair ((t1, a1), (t2, a2))))
-      
+
     | First e1 ->
       let t, a = aux env e1 in
       let t1_meta = Ast.fresh_meta () in
       let t2_meta = Ast.fresh_meta () in
       (try sub_type t (TPair (t1_meta, t2_meta))
        with Failure msg -> failwith ("Type error in First (fst): " ^ msg));
-      (Ast.force t1_meta, TAExprNode (First (t, a))) (* Use Ast.force *)
-      
+      (Ast.force t1_meta, TAExprNode (First (t, a)))
+
     | Second e1 ->
       let t, a = aux env e1 in
       let t1_meta = Ast.fresh_meta () in
       let t2_meta = Ast.fresh_meta () in
       (try sub_type t (TPair (t1_meta, t2_meta))
        with Failure msg -> failwith ("Type error in Second (snd): " ^ msg));
-      (Ast.force t2_meta, TAExprNode (Second (t, a))) (* Use Ast.force *)
-      
+      (Ast.force t2_meta, TAExprNode (Second (t, a)))
+
     | Fun (x, e1) ->
       let param_type = Ast.fresh_meta () in
       let env' = StringMap.add x param_type env in
       let return_type, a = aux env' e1 in
       (Ast.TFun (param_type, return_type), TAExprNode (Fun (x, (return_type, a))))
-      
+
     | FuncApp (e1, e2) ->
       let t_fun, a_fun = aux env e1 in
       let t_arg, a_arg = aux env e2 in
-      let param_ty_expected = Ast.fresh_meta () in (* Fresh meta for expected param type *) 
-      let result_ty = Ast.fresh_meta () in (* Fresh meta for result type *) 
-      (try 
-         (* Check t_fun is a function expecting param_ty_expected and returning result_ty *) 
+      let param_ty_expected = Ast.fresh_meta () in
+      let result_ty = Ast.fresh_meta () in
+      (try
          sub_type t_fun (Ast.TFun (param_ty_expected, result_ty));
-         (* Check t_arg is a subtype of what the function expects *) 
-         sub_type t_arg param_ty_expected 
+         sub_type t_arg param_ty_expected
        with Failure msg -> failwith ("Type error in function application: " ^ msg));
       (result_ty, TAExprNode (FuncApp ((t_fun, a_fun), (t_arg, a_arg))))
-      
+
     | LoopApp (e1, e2, e3) ->
       let t_fun, a_fun = aux env e1 in
       let t_arg, a_arg = aux env e2 in
-      (* Third argument is just a number *)
-      let param_ty_expected = Ast.fresh_meta () in (* Fresh meta for expected param type *) 
-      let result_ty = Ast.fresh_meta () in (* Fresh meta for result type *) 
-      (try 
-          (* Check t_fun is a function expecting param_ty_expected and returning result_ty *) 
+      let param_ty_expected = Ast.fresh_meta () in
+      let result_ty = Ast.fresh_meta () in
+      (try
           sub_type t_fun (Ast.TFun (param_ty_expected, result_ty));
-          (* Check t_arg is a subtype of what the function expects *) 
-          sub_type t_arg param_ty_expected 
+          sub_type t_arg param_ty_expected
         with Failure msg -> failwith ("Type error in loop application: " ^ msg));
       (result_ty, TAExprNode (LoopApp ((t_fun, a_fun), (t_arg, a_arg), e3)))
-       
+
     | FinConst (k, n) ->
       if k < 0 || k >= n then failwith (Printf.sprintf "Invalid FinConst value: %d#%d. k must be >= 0 and < n." k n);
       (Ast.TFin n, TAExprNode (FinConst (k, n)))
 
-    | FinEq (e1, e2, n) -> (* New case for FinEq in elab *)
+    | FinEq (e1, e2, n) ->
       if n <= 0 then failwith (Printf.sprintf "Invalid FinEq modulus: ==#%d. n must be > 0." n);
       let t1, a1 = aux env e1 in
       let t2, a2 = aux env e2 in
@@ -398,7 +477,7 @@ let infer (e : expr) : texpr =
       (try sub_type t2 Ast.TBool
        with Failure msg -> failwith ("Type error in And (&&) right operand: " ^ msg));
       (TBool, TAExprNode (And ((t1, a1), (t2, a2))))
-      
+
     | Or (e1, e2) ->
       let t1, a1 = aux env e1 in
       let t2, a2 = aux env e2 in
@@ -416,13 +495,13 @@ let infer (e : expr) : texpr =
 
     | Observe e1 ->
       let t1, a1 = aux env e1 in
-      (try sub_type t1 TBool (* Argument must be TBool *)
+      (try sub_type t1 TBool
        with Failure msg -> failwith ("Type error in Observe argument: " ^ msg));
-      (TUnit, TAExprNode (Observe (t1, a1))) (* Result is TUnit *)
+      (TUnit, TAExprNode (Observe (t1, a1)))
 
-    | Fix (f, x, e_body) -> 
-      let fun_type_itself = Ast.fresh_meta () in (* Type of f *)
-      let param_type = Ast.fresh_meta () in      (* Type of x *)
+    | Fix (f, x, e_body) ->
+      let fun_type_itself = Ast.fresh_meta () in
+      let param_type = Ast.fresh_meta () in
       let env_body = StringMap.add x param_type (StringMap.add f fun_type_itself env) in
       let body_texpr = aux env_body e_body in
       let body_ret_type = fst body_texpr in
@@ -430,14 +509,14 @@ let infer (e : expr) : texpr =
       unify fun_type_itself actual_fun_type;
       (fun_type_itself, TAExprNode (Fix (f, x, body_texpr)))
 
-    | Nil -> 
+    | Nil ->
       let elem_ty = Ast.fresh_meta () in
-      (TList elem_ty, TAExprNode Nil) 
+      (TList elem_ty, TAExprNode Nil)
 
     | Cons (e_hd, e_tl) ->
       let t_hd, a_hd = aux env e_hd in
       let t_tl, a_tl = aux env e_tl in
-      (try unify t_tl (TList t_hd) 
+      (try unify t_tl (TList t_hd)
        with Failure msg -> failwith ("Type error in list construction (::): " ^ msg));
       (t_tl, TAExprNode (Cons ((t_hd, a_hd), (t_tl, a_tl))))
 
@@ -446,14 +525,11 @@ let infer (e : expr) : texpr =
       let elem_ty = Ast.fresh_meta () in
       (try unify t_match (TList elem_ty)
        with Failure msg -> failwith ("Type error in match expression (expected list type): " ^ msg));
-      (* Type check nil branch *) 
       let t_nil, a_nil = aux env e_nil in
-      (* Type check cons branch *) 
       let env_cons = StringMap.add y elem_ty (StringMap.add ys t_match env) in
       let t_cons, a_cons = aux env_cons e_cons in
-      (* Unify branch types *) 
       let result_ty = Ast.fresh_meta () in
-      (try 
+      (try
          sub_type t_nil result_ty;
          sub_type t_cons result_ty
        with Failure msg -> failwith ("Type error in match branches: " ^ msg));
@@ -474,7 +550,7 @@ let infer (e : expr) : texpr =
       let t1, a1 = aux env e1 in
       let t2, a2 = aux env e2 in
       let val_ty = Ast.fresh_meta () in
-      (try 
+      (try
          unify t1 (TRef val_ty);
          sub_type t2 (Ast.force val_ty)
        with Failure msg -> failwith ("Type error in assignment (:=): " ^ msg));
@@ -483,17 +559,36 @@ let infer (e : expr) : texpr =
     | Seq (e1, e2) ->
       let t1, a1 = aux env e1 in
       let t2, a2 = aux env e2 in
-      (t2, TAExprNode (Seq ((t1, a1), (t2, a2)))) (* Type of sequence is type of e2 *)
+      (t2, TAExprNode (Seq ((t1, a1), (t2, a2))))
 
     | Unit -> (Ast.TUnit, TAExprNode Unit)
 
     | RuntimeError s -> (Ast.fresh_meta (), TAExprNode (RuntimeError s))
 
+  (* Inference for an arithmetic operation; the result's type is a
+     fresh symbolic float whose sym-bag identifies the whole
+     [orig_expr]. *)
+  and arith_aux env orig_expr e1 e2 _op_name rebuild =
+    let t1, a1 = aux env e1 in
+    let t2, a2 = aux env e2 in
+    (* Both operands must be floats. *)
+    let dummy_cut1 = Ast.fresh_cut_bag () in
+    let dummy_float1 = Lats.fresh_float_bag () in
+    let dummy_sym1 = Ast.fresh_sym_bag () in
+    let dummy_cut2 = Ast.fresh_cut_bag () in
+    let dummy_float2 = Lats.fresh_float_bag () in
+    let dummy_sym2 = Ast.fresh_sym_bag () in
+    (try sub_type t1 (TFloat (dummy_cut1, dummy_float1, dummy_sym1))
+     with Failure msg -> failwith ("Type error in arithmetic left operand: " ^ msg));
+    (try sub_type t2 (TFloat (dummy_cut2, dummy_float2, dummy_sym2))
+     with Failure msg -> failwith ("Type error in arithmetic right operand: " ^ msg));
+    let result_ty = arith_result_ty orig_expr in
+    (result_ty, TAExprNode (rebuild (t1, a1) (t2, a2)))
+
   in
   aux StringMap.empty e
 
-(* Function that does infer but insists that the return type is TBool *)
 let infer_bool (e : expr) : texpr =
   let t, a = infer e in
   sub_type t Ast.TBool;
-  (t, a) 
+  (t, a)
