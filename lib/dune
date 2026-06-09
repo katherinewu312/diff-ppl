@@ -2,7 +2,7 @@
  (name slice)
  (public_name diff_ppl.slice)
  (libraries gsl)
- (modules lat lats ast distributions lexer parser parse pretty interp util discretization inference))
+ (modules lat lats ast distributions lexer parser parse pretty interp util normalize discretization inference))
 
 (ocamllex lexer)
 

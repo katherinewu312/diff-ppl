@@ -261,12 +261,6 @@ opt_bar:
 number:
   | f = FLOAT { f }
   | i = INT   { float_of_int i }
-  /* Arithmetic expressions */
-  | e1 = number PLUS e2 = number { e1 +. e2 }
-  | e1 = number MINUS e2 = number { e1 -. e2 }
-  | e1 = number TIMES e2 = number { e1 *. e2 }
-  | e1 = number DIVIDE e2 = number { e1 /. e2 }
-  | LPAREN e = number RPAREN { e }
   ;
 
 expr_comma_list: (* Definition for comma-separated list of expressions *)

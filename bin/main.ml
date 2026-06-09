@@ -19,11 +19,13 @@ let print_section title body =
 let run ~print_all filename =
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
-  let texpr = Slice.Inference.infer expr in
+  let normalized = Slice.Normalize.normalise expr in
+  let texpr = Slice.Inference.infer normalized in
   let transformed = Slice.Discretization.discretize_top texpr in
   let transformed_source = Slice.Pretty.string_of_expr transformed in
   if print_all then (
     print_section "Source program" source;
+    print_section "Normalized program" (Slice.Pretty.string_of_expr normalized);
     print_section "Typed AST" (Slice.Pretty.string_of_texpr texpr);
     print_section "Output program" transformed_source)
   else
