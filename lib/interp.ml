@@ -230,6 +230,9 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
       in
       VFloat (Distributions.cdistr_cdf dist x)
 
+  | CdfExpr (_, _) ->
+      raise (RuntimeError "CdfExpr cannot be evaluated by the reference interpreter: kernel CDFs do not have closed-form numeric evaluation here")
+
 and arith_eval env e1 e2 op op_name =
   let v1 = eval env e1 in
   let v2 = eval env e2 in

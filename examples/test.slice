@@ -1,1 +1,1 @@
-uniform(0,1) + 2 < theta
+let x = uniform(0,1) in if uniform(0,1) + 5 < theta then 0 else 1

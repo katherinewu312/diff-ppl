@@ -46,6 +46,11 @@ type 'a expr_generic =
   (* CDF of a continuous distribution evaluated at a point.
      Emitted only by the discretizer when symbolic cuts are present. *)
   | Cdf of 'a sample * 'a
+  (* CDF of an arbitrary (sample-containing) expression evaluated at
+     a point.  Used when the kernel on the LHS of a comparison is a
+     compound expression like [uniform() + uniform()] rather than a
+     bare [Sample]. *)
+  | CdfExpr of 'a * 'a
 
 and single_arg_dist_kind =
   | DExponential | DLaplace | DCauchy | DTDist | DChi2 | DLogistic | DRayleigh | DPoisson

@@ -99,6 +99,7 @@ let rec texpr_to_expr ((_, TAExprNode ae) : texpr) : expr =
   | Mul (e1, e2) -> ExprNode (Mul (texpr_to_expr e1, texpr_to_expr e2))
   | Div (e1, e2) -> ExprNode (Div (texpr_to_expr e1, texpr_to_expr e2))
   | Cdf (d, e1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr e1))
+  | CdfExpr (k, e1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr e1))
 
 and sample_to_expr (d : texpr sample) : expr sample =
   match d with
@@ -131,6 +132,32 @@ distribution's probabilities are computed numerically via the GSL
 CDF.  When any cut is symbolic, the probabilities are emitted as
 symbolic expressions of the form [CDF(d, c2) - CDF(d, c1)].
 *)
+(* Does a [texpr] (or any sub-expression) contain a [Sample] node?
+   Used to detect "sample-flavored" expressions that the
+   discretizer must emit as a kernel-CDF discrete distribution. *)
+let rec texpr_contains_sample ((_, TAExprNode ae) : texpr) : bool =
+  match ae with
+  | Sample _ -> true
+  | Const _ | Var _ | BoolConst _ | Nil | Unit
+  | FinConst _ | RuntimeError _ -> false
+  | Let (_, e1, e2) -> texpr_contains_sample e1 || texpr_contains_sample e2
+  | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
+  | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _) | FinEq (e1, e2, _)
+  | And (e1, e2) | Or (e1, e2) | Pair (e1, e2) | FuncApp (e1, e2)
+  | LoopApp (e1, e2, _) | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2
+  | Not e1 | First e1 | Second e1 | Observe e1
+  | Ref e1 | Deref e1 -> texpr_contains_sample e1
+  | If (e1, e2, e3) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
+  | Fun (_, e1) | Fix (_, _, e1) -> texpr_contains_sample e1
+  | MatchList (e1, e2, _, _, e3) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
+  | DistrCase cases ->
+      List.exists (fun (b, p) -> texpr_contains_sample b || texpr_contains_sample p) cases
+  | Cdf (_, e1) -> texpr_contains_sample e1
+  | CdfExpr (k, e1) -> texpr_contains_sample k || texpr_contains_sample e1
+
 (* If a float-typed expression has a single symbolic identity and a
    finite cut bag of symbolic cuts, return [Some (FinConst idx n)]
    where [idx, n] place the symbolic identity within the cut list.
@@ -142,16 +169,21 @@ let try_finconst_from_sym (ty : ty) : expr option =
      | Finite cut_set, Finite sym_set
        when not (CutSet.is_empty cut_set)
          && SymSet.cardinal sym_set = 1 ->
-         let (s, _) = SymSet.choose sym_set in
-         let all_sym_cuts =
-           CutSet.for_all
-             (function Less (CVSym _) | LessEq (CVSym _) -> true | _ -> false)
-             cut_set
-         in
-         if all_sym_cuts then
-           let idx, modulus = get_iv_idx_and_modulus (IVSym s) cut_set in
-           Some (ExprNode (FinConst (idx, modulus)))
-         else None
+         let (s, sym_expr) = SymSet.choose sym_set in
+         (* Sample-flavored symbolic identities are not fixed
+            values -- they're random variables -- so we never
+            resolve them to a FinConst here. *)
+         if Normalize.contains_sample sym_expr then None
+         else
+           let all_sym_cuts =
+             CutSet.for_all
+               (function Less (CVSym _) | LessEq (CVSym _) -> true | _ -> false)
+               cut_set
+           in
+           if all_sym_cuts then
+             let idx, modulus = get_iv_idx_and_modulus (IVSym s) cut_set in
+             Some (ExprNode (FinConst (idx, modulus)))
+           else None
      | _ -> None)
   | _ -> None
 
@@ -159,6 +191,52 @@ let try_finconst_or_default (ty : ty) (default : unit -> expr) : expr =
   match try_finconst_from_sym ty with
   | Some e -> e
   | None -> default ()
+
+(* If the given [texpr] is sample-flavored (contains a [Sample]
+   somewhere inside it) and its TFloat cut bag is finite and
+   non-empty, emit a [DistrCase] whose probabilities are kernel-
+   CDF expressions of the form [CDF(kernel, cut_i) - CDF(kernel,
+   cut_{i-1})].  Returns [None] when no such emission is needed
+   (e.g. [te] is a plain constant, or the cut bag is [Top] / empty,
+   or [te] does not contain a [Sample]). *)
+let try_emit_kernel_discrete (ty : ty) (kernel_expr : expr) (te : texpr) : expr option =
+  if not (texpr_contains_sample te) then None
+  else
+    match Ast.force ty with
+    | TFloat (cut_bag, _, _) ->
+      (match CutLat.get cut_bag with
+       | Top -> None
+       | Finite cut_set when CutSet.is_empty cut_set -> None
+       | Finite cut_set ->
+         let cuts = CutSet.elements cut_set in
+         let n = 1 + List.length cuts in
+         let cut_point_expr (cv : cut_val) : expr =
+           match cv with
+           | CVConst f -> ExprNode (Const f)
+           | CVSym (_, e) -> e
+         in
+         let cut_to_expr (c : cut) : expr =
+           match c with
+           | Less cv | LessEq cv -> cut_point_expr cv
+         in
+         let cut_exprs = List.map cut_to_expr cuts in
+         let mk_cdf p = ExprNode (CdfExpr (kernel_expr, p)) in
+         let cases =
+           List.init n (fun k ->
+             let left_cdf =
+               if k = 0 then ExprNode (Const 0.0)
+               else mk_cdf (List.nth cut_exprs (k - 1))
+             in
+             let right_cdf =
+               if k = n - 1 then ExprNode (Const 1.0)
+               else mk_cdf (List.nth cut_exprs k)
+             in
+             let prob = ExprNode (Sub (right_cdf, left_cdf)) in
+             (ExprNode (FinConst (k, n)), prob)
+           )
+         in
+         Some (ExprNode (DistrCase cases)))
+    | _ -> None
 
 let discretize (e : texpr) : expr =
   (* Helper function for comparison operations *)
@@ -216,19 +294,31 @@ let discretize (e : texpr) : expr =
         ExprNode (Let (x, aux te1, aux te2))
 
     | Add _ | Sub _ | Mul _ | Div _ ->
-        (* If the arithmetic expression carries a unique symbolic
-           identity that matches a cut, replace it with the
-           corresponding [FinConst]; otherwise keep the original
-           arithmetic form. *)
-        try_finconst_or_default ty (fun () ->
-          match ae_node with
-          | Add (te1, te2) -> ExprNode (Add (texpr_to_expr te1, texpr_to_expr te2))
-          | Sub (te1, te2) -> ExprNode (Sub (texpr_to_expr te1, texpr_to_expr te2))
-          | Mul (te1, te2) -> ExprNode (Mul (texpr_to_expr te1, texpr_to_expr te2))
-          | Div (te1, te2) -> ExprNode (Div (texpr_to_expr te1, texpr_to_expr te2))
-          | _ -> failwith "unreachable"
-        )
+        (* Three cases, in priority order:
+           1. The arithmetic expression carries a unique symbolic
+              identity matching a cut -> emit the corresponding
+              [FinConst] (e.g. RHS of a comparison like
+              [u() < theta + 1]).
+           2. The expression contains a [Sample] and has a finite
+              cut bag -> emit a [DistrCase] of kernel-CDF
+              probabilities (the "non-affine LHS" case).
+           3. Otherwise -> keep the arithmetic form. *)
+        (match try_finconst_from_sym ty with
+         | Some e -> e
+         | None ->
+            let kernel_expr =
+              match ae_node with
+              | Add (te1, te2) -> ExprNode (Add (texpr_to_expr te1, texpr_to_expr te2))
+              | Sub (te1, te2) -> ExprNode (Sub (texpr_to_expr te1, texpr_to_expr te2))
+              | Mul (te1, te2) -> ExprNode (Mul (texpr_to_expr te1, texpr_to_expr te2))
+              | Div (te1, te2) -> ExprNode (Div (texpr_to_expr te1, texpr_to_expr te2))
+              | _ -> failwith "unreachable"
+            in
+            match try_emit_kernel_discrete ty kernel_expr (ty, TAExprNode ae_node) with
+            | Some e -> e
+            | None -> kernel_expr)
     | Cdf (d, te1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr te1))
+    | CdfExpr (k, te1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr te1))
 
     | Sample dist_exp ->
         let outer_sample_ty = ty in

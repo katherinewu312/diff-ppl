@@ -155,7 +155,7 @@ let infer (e : expr) : texpr =
     | Mul (e1, e2) -> arith_aux env orig_expr e1 e2 "Mul" (fun a b -> Mul (a, b))
     | Div (e1, e2) -> arith_aux env orig_expr e1 e2 "Div" (fun a b -> Div (a, b))
 
-    | Cdf _ ->
+    | Cdf _ | CdfExpr _ ->
       (* CDF nodes are emitted by the discretizer; they should not
          appear in surface programs.  Treat as a symbolic float for
          completeness. *)
@@ -338,12 +338,17 @@ let infer (e : expr) : texpr =
               (match sv2 with
                | Finite ss2 ->
                    Ast.SymSet.iter (fun (_, e) ->
-                     let cv = sym_cut_val_of_expr e in
-                     let cut = match cmp_op with
-                       | Ast.Lt -> Less cv
-                       | Ast.Le -> LessEq cv
-                     in
-                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                     (* Skip symbolic values that themselves
+                        contain a Sample: they aren't usable as
+                        cut points (their value depends on
+                        randomness). *)
+                     if not (Normalize.contains_sample e) then
+                       let cv = sym_cut_val_of_expr e in
+                       let cut = match cmp_op with
+                         | Ast.Lt -> Less cv
+                         | Ast.Le -> LessEq cv
+                       in
+                       cuts_to_add := Ast.CutSet.add cut !cuts_to_add
                    ) ss2
                | Top -> ());
 
@@ -362,12 +367,13 @@ let infer (e : expr) : texpr =
               (match sv1 with
                | Finite ss1 ->
                    Ast.SymSet.iter (fun (_, e) ->
-                     let cv = sym_cut_val_of_expr e in
-                     let cut = match cmp_op with
-                       | Ast.Lt -> LessEq cv
-                       | Ast.Le -> Less cv
-                     in
-                     cuts_to_add := Ast.CutSet.add cut !cuts_to_add
+                     if not (Normalize.contains_sample e) then
+                       let cv = sym_cut_val_of_expr e in
+                       let cut = match cmp_op with
+                         | Ast.Lt -> LessEq cv
+                         | Ast.Le -> Less cv
+                       in
+                       cuts_to_add := Ast.CutSet.add cut !cuts_to_add
                    ) ss1
                | Top -> ());
 

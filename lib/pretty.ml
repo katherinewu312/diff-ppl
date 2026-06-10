@@ -116,6 +116,7 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | Mul (e1, e2) -> Printf.sprintf "(%s * %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Div (e1, e2) -> Printf.sprintf "(%s / %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Cdf (d, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_sample_plain d) (string_of_expr_plain e1)
+  | CdfExpr (k, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_expr_plain k) (string_of_expr_plain e1)
 
 and string_of_sample_plain = function
   | Distr1 (kind, e1) ->
@@ -285,6 +286,9 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
   | Cdf (d, e1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_sample ~indent d) (string_of_expr_indented ~indent e1)
+  | CdfExpr (k, e1) ->
+      Printf.sprintf "%sCDF%s(%s, %s)"
+        keyword_color reset_color (string_of_expr_indented ~indent k) (string_of_expr_indented ~indent e1)
 
 and string_of_sample ?(indent=0) dist_exp =
   match dist_exp with
@@ -443,6 +447,9 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
   | Cdf (d, te1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_asample ~indent d) (string_of_texpr_indented ~indent te1)
+  | CdfExpr (k, te1) ->
+      Printf.sprintf "%sCDF%s(%s, %s)"
+        keyword_color reset_color (string_of_texpr_indented ~indent k) (string_of_texpr_indented ~indent te1)
 
 and string_of_ty = function
   | TBool -> Printf.sprintf "%sbool%s" type_color reset_color
