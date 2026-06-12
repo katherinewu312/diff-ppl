@@ -1,1 +1,2 @@
-let a = uniform(0,1) in let b = uniform(0,1) in a * b < theta
+let a = uniform(0, 1) in
+if a < theta then theta * theta else theta + 1

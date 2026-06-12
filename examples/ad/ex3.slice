@@ -1,0 +1,8 @@
+let a = uniform(0, 1) in
+let b = uniform(0, 1) in
+if a < theta then
+  if b < theta * theta then theta
+  else theta * theta
+else
+  if b < theta then 1
+  else 0

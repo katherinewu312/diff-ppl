@@ -155,14 +155,51 @@ let infer (e : expr) : texpr =
     | Mul (e1, e2) -> arith_aux env orig_expr e1 e2 "Mul" (fun a b -> Mul (a, b))
     | Div (e1, e2) -> arith_aux env orig_expr e1 e2 "Div" (fun a b -> Div (a, b))
 
-    | Cdf _ | CdfExpr _ ->
-      (* CDF nodes are emitted by the discretizer; they should not
-         appear in surface programs.  Treat as a symbolic float for
-         completeness. *)
+    | Cdf (dist_exp, point_e) ->
+      (* CDF nodes are emitted by the discretizer and may be consumed
+         by later source-to-source passes, so preserve their shape in
+         the typed AST instead of replacing them with a dummy const. *)
+      let infer_cdf_arg e arg_name =
+        let t, a = aux env e in
+        let arg_cut = Ast.fresh_cut_bag () in
+        let arg_float = Lats.fresh_float_bag () in
+        let arg_sym = Ast.fresh_sym_bag () in
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+         with Failure msg -> failwith ("Type error in CDF " ^ arg_name ^ ": " ^ msg));
+        (t, a)
+      in
+      let dist_exp' =
+        match dist_exp with
+        | Distr1 (kind, e1) ->
+            let te1 = infer_cdf_arg e1 "distribution argument" in
+            Distr1 (kind, te1)
+        | Distr2 (kind, e1, e2) ->
+            let te1 = infer_cdf_arg e1 "first distribution argument" in
+            let te2 = infer_cdf_arg e2 "second distribution argument" in
+            Distr2 (kind, te1, te2)
+      in
+      let point_te = infer_cdf_arg point_e "point argument" in
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Const 0.0))
+      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Cdf (dist_exp', point_te)))
+
+    | CdfExpr (kernel_e, point_e) ->
+      let infer_float e arg_name =
+        let t, a = aux env e in
+        let arg_cut = Ast.fresh_cut_bag () in
+        let arg_float = Lats.fresh_float_bag () in
+        let arg_sym = Ast.fresh_sym_bag () in
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+         with Failure msg -> failwith ("Type error in CDF expression " ^ arg_name ^ ": " ^ msg));
+        (t, a)
+      in
+      let kernel_te = infer_float kernel_e "kernel argument" in
+      let point_te = infer_float point_e "point argument" in
+      let cuts_bag = Ast.fresh_cut_bag () in
+      let floats_bag = Lats.fresh_float_bag () in
+      let sym_bag = singleton_sym_bag orig_expr in
+      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (CdfExpr (kernel_te, point_te)))
 
     | Sample dist_exp ->
       let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in

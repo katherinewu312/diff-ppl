@@ -1,0 +1,6 @@
+let a = discrete(theta, 1 - theta) in
+let b = discrete(theta * theta, 1 - theta * theta) in
+if a <#2 1#2 then
+  if b <#2 1#2 then theta * theta else theta + 1
+else
+  if b <#2 1#2 then theta / 2 else 0

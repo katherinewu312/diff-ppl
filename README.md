@@ -76,7 +76,14 @@ The executable accepts one input file:
 ```sh
 dune exec diff_ppl -- FILE.slice
 dune exec diff_ppl -- --print-all FILE.slice
+dune exec diff_ppl -- --ad FILE.slice
+dune exec diff_ppl -- --ad-dual FILE.slice
 ```
+
+`--ad` prints the ADEV-style tangent program for the discretized program.
+`--ad-dual` prints the full dual program as `(primal, tangent)`.
+With `--print-all`, AD modes also print the raw source-to-source AD program
+before the simplified AD output.
 
 ## Project Layout
 

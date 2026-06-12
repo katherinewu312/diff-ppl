@@ -1,3 +1,1 @@
-let x = uniform(0,1) in
-if uniform(0,1) < 0.5 then let _ = observe(x >= 0.5 && x <= 0.5) in true
-else let _ = observe(x <= 0.3001 && x >= 0.3) in false
+let a = uniform(0,1) in a < theta
