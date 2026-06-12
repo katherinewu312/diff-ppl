@@ -222,3 +222,69 @@ and expr_env env (ExprNode e) =
 and sample_env env = function
   | Distr1 (kind, e1) -> Distr1 (kind, expr_env env e1)
   | Distr2 (kind, e1, e2) -> Distr2 (kind, expr_env env e1, expr_env env e2)
+
+let rec subst_var (name : string) (replacement : expr) (ExprNode e) : expr =
+  match e with
+  | Var x when x = name -> replacement
+  | Var x -> node (Var x)
+  | Const f -> node (Const f)
+  | BoolConst b -> node (BoolConst b)
+  | Let (x, e1, e2) ->
+      let e1' = subst_var name replacement e1 in
+      let e2' = if x = name then e2 else subst_var name replacement e2 in
+      node (Let (x, e1', e2'))
+  | Sample d -> node (Sample (subst_sample name replacement d))
+  | DistrCase cases ->
+      node (DistrCase (List.map (fun (b, p) -> (subst_var name replacement b, subst_var name replacement p)) cases))
+  | Cmp (op, e1, e2, flipped) ->
+      node (Cmp (op, subst_var name replacement e1, subst_var name replacement e2, flipped))
+  | And (e1, e2) -> node (And (subst_var name replacement e1, subst_var name replacement e2))
+  | Or (e1, e2) -> node (Or (subst_var name replacement e1, subst_var name replacement e2))
+  | Not e1 -> node (Not (subst_var name replacement e1))
+  | If (e1, e2, e3) ->
+      node (If (subst_var name replacement e1, subst_var name replacement e2, subst_var name replacement e3))
+  | Pair (e1, e2) -> node (Pair (subst_var name replacement e1, subst_var name replacement e2))
+  | First e1 -> node (First (subst_var name replacement e1))
+  | Second e1 -> node (Second (subst_var name replacement e1))
+  | Fun (x, e1) ->
+      let e1' = if x = name then e1 else subst_var name replacement e1 in
+      node (Fun (x, e1'))
+  | FuncApp (e1, e2) -> node (FuncApp (subst_var name replacement e1, subst_var name replacement e2))
+  | LoopApp (e1, e2, n) -> node (LoopApp (subst_var name replacement e1, subst_var name replacement e2, n))
+  | FinConst (k, n) -> node (FinConst (k, n))
+  | FinCmp (op, e1, e2, n, flipped) ->
+      node (FinCmp (op, subst_var name replacement e1, subst_var name replacement e2, n, flipped))
+  | FinEq (e1, e2, n) -> node (FinEq (subst_var name replacement e1, subst_var name replacement e2, n))
+  | Observe e1 -> node (Observe (subst_var name replacement e1))
+  | Fix (f, x, e1) ->
+      let e1' =
+        if f = name || x = name then e1 else subst_var name replacement e1
+      in
+      node (Fix (f, x, e1'))
+  | Nil -> node Nil
+  | Cons (e1, e2) -> node (Cons (subst_var name replacement e1, subst_var name replacement e2))
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      let e_cons' =
+        if y = name || ys = name then e_cons else subst_var name replacement e_cons
+      in
+      node (MatchList (subst_var name replacement e1, subst_var name replacement e_nil, y, ys, e_cons'))
+  | Ref e1 -> node (Ref (subst_var name replacement e1))
+  | Deref e1 -> node (Deref (subst_var name replacement e1))
+  | Assign (e1, e2) -> node (Assign (subst_var name replacement e1, subst_var name replacement e2))
+  | Seq (e1, e2) -> node (Seq (subst_var name replacement e1, subst_var name replacement e2))
+  | Unit -> node Unit
+  | RuntimeError s -> node (RuntimeError s)
+  | Add (e1, e2) -> node (Add (subst_var name replacement e1, subst_var name replacement e2))
+  | Sub (e1, e2) -> node (Sub (subst_var name replacement e1, subst_var name replacement e2))
+  | Mul (e1, e2) -> node (Mul (subst_var name replacement e1, subst_var name replacement e2))
+  | Div (e1, e2) -> node (Div (subst_var name replacement e1, subst_var name replacement e2))
+  | Cdf (d, e1) -> node (Cdf (subst_sample name replacement d, subst_var name replacement e1))
+  | CdfExpr (k, e1) -> node (CdfExpr (subst_var name replacement k, subst_var name replacement e1))
+
+and subst_sample name replacement = function
+  | Distr1 (kind, e1) -> Distr1 (kind, subst_var name replacement e1)
+  | Distr2 (kind, e1, e2) -> Distr2 (kind, subst_var name replacement e1, subst_var name replacement e2)
+
+(* Walks an AST and replaces free occurrences of a variable, like theta, with a float constant. *)
+let subst_float name value e =
+  subst_var name (mk_const value) e

@@ -15,10 +15,26 @@ let adev_dual_after_discretize source =
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.dual_expectation texpr
 
+let adev_dual_after_discretize_at param value source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  let raw = Slice.Adev.dual_expectation_raw ~param texpr in
+  let simplified = Slice.Adev.dual_expectation ~param texpr in
+  ( Slice.Simplify.subst_float param value raw
+  , Slice.Simplify.expr (Slice.Simplify.subst_float param value simplified) )
+
 let adev_gradient_after_discretize source =
   let transformed = transform source in
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.gradient texpr
+
+let contains_substring s needle =
+  let len = String.length s in
+  let n = String.length needle in
+  let rec loop i =
+    i + n <= len && (String.sub s i n = needle || loop (i + 1))
+  in
+  n = 0 || loop 0
 
 let eval_float_with_theta theta expr =
   match Slice.Interp.eval [("theta", Slice.Ast.VFloat theta)] expr with
@@ -90,6 +106,59 @@ let test_adev_uniform_cdf_gradient_simplifies _ =
     1.0
     (eval_float_with_theta 0.3 grad)
 
+let test_adev_dual_at_substitutes_raw_and_simplifies _ =
+  let raw, simplified =
+    adev_dual_after_discretize_at "theta" 0.3 "uniform(0, 1) < theta"
+  in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw AD program should contain the concrete parameter value"
+    (contains_substring raw_plain "0.3");
+  assert_bool "raw AD program should not contain the substituted parameter"
+    (not (contains_substring raw_plain "theta"));
+  (match simplified with
+   | Slice.Ast.ExprNode
+       (Slice.Ast.Pair
+          (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+           Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+       assert_equal
+         ~printer:string_of_float
+         ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+         0.3
+         primal;
+       assert_equal
+         ~printer:string_of_float
+         ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+         1.0
+         tangent
+   | _ ->
+       assert_failure
+         ("expected simplified AD-at output to be a constant dual pair, got: "
+          ^ Slice.Pretty.string_of_expr_plain simplified))
+
+let test_adev_dual_at_can_use_non_theta_parameter _ =
+  let _, simplified =
+    adev_dual_after_discretize_at "alpha" 0.4 "uniform(0, 1) < alpha"
+  in
+  match simplified with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Pair
+         (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        0.4
+        primal;
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        1.0
+        tangent
+  | _ ->
+      assert_failure
+        ("expected non-theta AD-at output to be a constant dual pair, got: "
+         ^ Slice.Pretty.string_of_expr_plain simplified)
+
 let suite =
   "Slice transformation tests" >:::
   [ "test_typing" >:: test_typing
@@ -98,6 +167,8 @@ let suite =
   ; "test_adev_includes_probability_and_body_derivatives" >:: test_adev_includes_probability_and_body_derivatives
   ; "test_adev_uniform_cdf_dual_simplifies" >:: test_adev_uniform_cdf_dual_simplifies
   ; "test_adev_uniform_cdf_gradient_simplifies" >:: test_adev_uniform_cdf_gradient_simplifies
+  ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
+  ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
   ]
 
 let () = run_test_tt_main suite

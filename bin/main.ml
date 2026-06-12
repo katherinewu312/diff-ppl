@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--ad | --ad-dual] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--ad | --ad-dual] [--at PARAM=VALUE] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -26,26 +26,61 @@ type ad_output =
   ; simplified : Slice.Ast.expr
   }
 
-let run ~print_all ~mode filename =
+type eval_point =
+  { param : string
+  ; value : float
+  }
+
+let parse_eval_point spec =
+  try
+    let idx = String.index spec '=' in
+    let param = String.sub spec 0 idx in
+    let value_text = String.sub spec (idx + 1) (String.length spec - idx - 1) in
+    if param = "" || value_text = "" then usage ();
+    { param; value = float_of_string value_text }
+  with
+  | Not_found | Failure _ -> usage ()
+
+let apply_eval_point_raw at e =
+  match at with
+  | None -> e
+  | Some { param; value } -> Slice.Simplify.subst_float param value e
+
+let apply_eval_point_simplified at e =
+  match at with
+  | None -> e
+  | Some { param; value } ->
+      Slice.Simplify.expr (Slice.Simplify.subst_float param value e)
+
+let run ~print_all ~mode ~at filename =
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
   let normalized = Slice.Normalize.normalise expr in
   let texpr = Slice.Inference.infer normalized in
   let transformed = Slice.Discretization.discretize_top texpr in
+  let ad_param =
+    match at with
+    | Some { param; _ } -> param
+    | None -> "theta"
+  in
   let ad_output =
     match mode with
     | Discretize -> None
     | AdGradient ->
         let discretized_texpr = Slice.Inference.infer transformed in
+        let raw = Slice.Adev.gradient_raw ~param:ad_param discretized_texpr in
+        let simplified = Slice.Adev.gradient ~param:ad_param discretized_texpr in
         Some
-          { raw = Slice.Adev.gradient_raw discretized_texpr
-          ; simplified = Slice.Adev.gradient discretized_texpr
+          { raw = apply_eval_point_raw at raw
+          ; simplified = apply_eval_point_simplified at simplified
           }
     | AdDual ->
         let discretized_texpr = Slice.Inference.infer transformed in
+        let raw = Slice.Adev.dual_expectation_raw ~param:ad_param discretized_texpr in
+        let simplified = Slice.Adev.dual_expectation ~param:ad_param discretized_texpr in
         Some
-          { raw = Slice.Adev.dual_expectation_raw discretized_texpr
-          ; simplified = Slice.Adev.dual_expectation discretized_texpr
+          { raw = apply_eval_point_raw at raw
+          ; simplified = apply_eval_point_simplified at simplified
           }
   in
   let output_expr =
@@ -74,23 +109,31 @@ let run ~print_all ~mode filename =
     print_endline output_source
 
 let () =
-  let rec parse_args print_all mode filename = function
+  let rec parse_args print_all mode at filename = function
     | [] ->
+        if mode = Discretize && at <> None then usage ();
         (match filename with
-         | Some f -> run ~print_all ~mode f
+         | Some f -> run ~print_all ~mode ~at f
          | None -> usage ())
     | "--print-all" :: rest ->
-        parse_args true mode filename rest
+        parse_args true mode at filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdGradient filename rest
+        parse_args print_all AdGradient at filename rest
     | "--ad-dual" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdDual filename rest
+        parse_args print_all AdDual at filename rest
+    | "--at" :: spec :: rest ->
+        if at <> None then usage ();
+        parse_args print_all mode (Some (parse_eval_point spec)) filename rest
+    | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
+        if at <> None then usage ();
+        let spec = String.sub arg 5 (String.length arg - 5) in
+        parse_args print_all mode (Some (parse_eval_point spec)) filename rest
     | arg :: rest ->
         if filename <> None then usage ();
-        parse_args print_all mode (Some arg) rest
+        parse_args print_all mode at (Some arg) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: args -> parse_args false Discretize None args
+  | _ :: args -> parse_args false Discretize None None args
   | [] -> usage ()

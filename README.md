@@ -71,30 +71,40 @@ Print the source program, typed AST, and transformed program:
 dune exec diff_ppl -- --print-all examples/simple_test.slice
 ```
 
-The executable accepts one input file:
+The executable accepts one input file, e.g.:
 
 ```sh
 dune exec diff_ppl -- FILE.slice
 dune exec diff_ppl -- --print-all FILE.slice
 dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
+dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
 ```
+
+Supports:
+
+* plain discretization
+* `--print-all` for source/normalized/typed/discretized output
+* `--ad` for simplified gradient output
+* `--print-all --ad` for raw + simplified gradient output
+* `--ad-dual` for simplified dual output
+* `--print-all --ad-dual` for raw + simplified dual output
+* `--at PARAM=VALUE` for concrete evaluation for AD modes
 
 `--ad` prints the ADEV-style tangent program for the discretized program.
 `--ad-dual` prints the full dual program as `(primal, tangent)`.
 With `--print-all`, AD modes also print the raw source-to-source AD program
 before the simplified AD output.
 
+AD modes also accept `--at PARAM=VALUE` or `--at=PARAM=VALUE`. This uses
+`PARAM` as the differentiated variable, substitutes `VALUE` into the raw AD
+program, and then simplifies the simplified AD program again at that concrete
+point. Without `--at`, AD output is unchanged and still differentiates with
+respect to `theta`.
+
 ## Project Layout
 
 - `lib/`: Slice transformation library modules.
-- `bin/main.ml`: transformation-only command-line entry point.
+- `bin/main.ml`: CLI.
 - `examples/`: sample `.slice` inputs.
 - `test/`: OUnit tests for parsing, inference, and discretization.
-
-## Notes
-
-- Backend files from Slice are intentionally omitted: `to_dice.ml`,
-  `to_roulette.ml`, and `to_mc.ml`.
-- The main library is exposed to Dune as `diff_ppl.slice`; the OCaml module name
-  remains `Slice`.
