@@ -57,7 +57,12 @@ let run ~print_all ~mode ~at filename =
   let expr = Slice.Parse.parse_expr source in
   let normalized = Slice.Normalize.normalise expr in
   let texpr = Slice.Inference.infer normalized in
-  let transformed = Slice.Discretization.discretize_top texpr in
+  let cut_order_at : Slice.Cut_order.at option =
+    match at with
+    | None -> None
+    | Some { param; value } -> Some { Slice.Cut_order.param = param; value }
+  in
+  let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
   let ad_param =
     match at with
     | Some { param; _ } -> param
@@ -111,7 +116,6 @@ let run ~print_all ~mode ~at filename =
 let () =
   let rec parse_args print_all mode at filename = function
     | [] ->
-        if mode = Discretize && at <> None then usage ();
         (match filename with
          | Some f -> run ~print_all ~mode ~at f
          | None -> usage ())

@@ -3,47 +3,6 @@
 open Ast
 open Lats
 
-let find_index pred lst =
-  let rec loop i = function
-    | [] -> None
-    | x::xs -> if pred x then Some i else loop (i+1) xs
-  in
-  loop 0 lst
-
-(* ======== Index value used to look a value up in a cut list ====== *)
-
-(* An identity for a value to be located in a cut list -- either a
-   concrete float or a symbolic expression identified by its
-   canonical string. *)
-type idx_value = IVConst of float | IVSym of string
-
-(* Test whether an [idx_value] satisfies a cut.  For constants the
-   ordinary numeric test is used; for symbolic values, only
-   identity (string equality) is well-defined, so symbolic values
-   "satisfy" only LessEq cuts whose symbolic identity matches. *)
-let satisfies_cut_iv (iv : idx_value) (cut : cut) : bool =
-  match iv, cut with
-  | IVConst f, Less (CVConst c)   -> f < c
-  | IVConst f, LessEq (CVConst c) -> f <= c
-  | IVSym _, Less (CVSym _)       -> false
-  | IVSym s, LessEq (CVSym (s', _)) -> s = s'
-  (* Mixed (sym value vs const cut, or const value vs sym cut) is
-     not supported -- per the design, programs are assumed to be
-     uniformly constant or uniformly symbolic.  Returning false
-     causes the value to fall into the last interval. *)
-  | _ -> false
-
-(* Compute the index and modulus for an [idx_value] in a cut set. *)
-let get_iv_idx_and_modulus (iv : idx_value) (cut_set : CutSet.t) : int * int =
-  let cuts = CutSet.elements cut_set in
-  let modulus = 1 + List.length cuts in
-  let idx = find_index (fun cut -> satisfies_cut_iv iv cut) cuts in
-  let idx = match idx with
-    | Some i -> i
-    | None -> modulus - 1
-  in
-  (idx, modulus)
-
 (* Calculate probability for a given concrete distribution in an
    interval.  Used only when all cuts are concrete constants. *)
 let prob_cdistr_interval (left : float) (right : float) (dist : Distributions.cdistr) : float =
@@ -162,7 +121,7 @@ let rec texpr_contains_sample ((_, TAExprNode ae) : texpr) : bool =
    finite cut bag of symbolic cuts, return [Some (FinConst idx n)]
    where [idx, n] place the symbolic identity within the cut list.
    Otherwise return [None]. *)
-let try_finconst_from_sym (ty : ty) : expr option =
+let try_finconst_from_sym ?cut_order_at (ty : ty) : expr option =
   match Ast.force ty with
   | TFloat (cut_bag, _, sym_bag) ->
     (match CutLat.get cut_bag, SymLat.get sym_bag with
@@ -181,14 +140,19 @@ let try_finconst_from_sym (ty : ty) : expr option =
                cut_set
            in
            if all_sym_cuts then
-             let idx, modulus = get_iv_idx_and_modulus (IVSym s) cut_set in
+             let idx, modulus =
+               Cut_order.idx_and_modulus
+                 ?at:cut_order_at
+                 (Cut_order.IVSym (s, sym_expr))
+                 cut_set
+             in
              Some (ExprNode (FinConst (idx, modulus)))
            else None
      | _ -> None)
   | _ -> None
 
-let try_finconst_or_default (ty : ty) (default : unit -> expr) : expr =
-  match try_finconst_from_sym ty with
+let try_finconst_or_default ?cut_order_at (ty : ty) (default : unit -> expr) : expr =
+  match try_finconst_from_sym ?cut_order_at ty with
   | Some e -> e
   | None -> default ()
 
@@ -199,7 +163,7 @@ let try_finconst_or_default (ty : ty) (default : unit -> expr) : expr =
    cut_{i-1})].  Returns [None] when no such emission is needed
    (e.g. [te] is a plain constant, or the cut bag is [Top] / empty,
    or [te] does not contain a [Sample]). *)
-let try_emit_kernel_discrete (ty : ty) (kernel_expr : expr) (te : texpr) : expr option =
+let try_emit_kernel_discrete ?cut_order_at (ty : ty) (kernel_expr : expr) (te : texpr) : expr option =
   if not (texpr_contains_sample te) then None
   else
     match Ast.force ty with
@@ -208,7 +172,7 @@ let try_emit_kernel_discrete (ty : ty) (kernel_expr : expr) (te : texpr) : expr 
        | Top -> None
        | Finite cut_set when CutSet.is_empty cut_set -> None
        | Finite cut_set ->
-         let cuts = CutSet.elements cut_set in
+         let cuts = Cut_order.ordered_cuts ?at:cut_order_at cut_set in
          let n = 1 + List.length cuts in
          let cut_point_expr (cv : cut_val) : expr =
            match cv with
@@ -238,7 +202,7 @@ let try_emit_kernel_discrete (ty : ty) (kernel_expr : expr) (te : texpr) : expr 
          Some (ExprNode (DistrCase cases)))
     | _ -> None
 
-let discretize (e : texpr) : expr =
+let discretize ?cut_order_at (e : texpr) : expr =
   (* Helper function for comparison operations *)
   let handle_comparison aux op_name te1 te2 cmp_op flipped =
     let t1 = fst te1 in
@@ -254,7 +218,7 @@ let discretize (e : texpr) : expr =
       | Top ->
           ExprNode (Cmp (cmp_op, aux te1, aux te2, flipped))
       | Finite bound_set ->
-          let n = 1 + List.length (CutSet.elements bound_set) in
+          let n = 1 + List.length (Cut_order.ordered_cuts ?at:cut_order_at bound_set) in
           let d1 = aux te1 in
           let d2 = aux te2 in
           ExprNode (FinCmp (cmp_op, d1, d2, n, flipped))
@@ -276,7 +240,12 @@ let discretize (e : texpr) : expr =
                   cut_set
               in
               if all_const_cuts then
-                let idx, modulus = get_iv_idx_and_modulus (IVConst f) cut_set in
+                let idx, modulus =
+                  Cut_order.idx_and_modulus
+                    ?at:cut_order_at
+                    (Cut_order.IVConst f)
+                    cut_set
+                in
                 ExprNode (FinConst (idx, modulus))
               else
                 (* Mixed/symbolic cut set with a constant value:
@@ -288,7 +257,7 @@ let discretize (e : texpr) : expr =
     | BoolConst b -> ExprNode (BoolConst b)
 
     | Var x ->
-        try_finconst_or_default ty (fun () -> ExprNode (Var x))
+        try_finconst_or_default ?cut_order_at ty (fun () -> ExprNode (Var x))
 
     | Let (x, te1, te2) ->
         ExprNode (Let (x, aux te1, aux te2))
@@ -303,7 +272,7 @@ let discretize (e : texpr) : expr =
               cut bag -> emit a [DistrCase] of kernel-CDF
               probabilities (the "non-affine LHS" case).
            3. Otherwise -> keep the arithmetic form. *)
-        (match try_finconst_from_sym ty with
+        (match try_finconst_from_sym ?cut_order_at ty with
          | Some e -> e
          | None ->
             let kernel_expr =
@@ -314,7 +283,7 @@ let discretize (e : texpr) : expr =
               | Div (te1, te2) -> ExprNode (Div (texpr_to_expr te1, texpr_to_expr te2))
               | _ -> failwith "unreachable"
             in
-            match try_emit_kernel_discrete ty kernel_expr (ty, TAExprNode ae_node) with
+            match try_emit_kernel_discrete ?cut_order_at ty kernel_expr (ty, TAExprNode ae_node) with
             | Some e -> e
             | None -> kernel_expr)
     | Cdf (d, te1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr te1))
@@ -339,7 +308,7 @@ let discretize (e : texpr) : expr =
             ExprNode (Sample (Distr2 (kind, texpr_arg1_discretized, texpr_arg2_discretized)))
           )
         | Finite outer_cut_set ->
-          let outer_cuts = CutSet.elements outer_cut_set in
+          let outer_cuts = Cut_order.ordered_cuts ?at:cut_order_at outer_cut_set in
           let overall_modulus = 1 + List.length outer_cuts in
           if overall_modulus <= 0 then failwith "Internal error: Sample modulus must be positive";
 
@@ -458,7 +427,7 @@ let discretize (e : texpr) : expr =
                 (match CutLat.get b_bag with
                  | Top -> None
                  | Finite bs_set ->
-                   let cuts = CutSet.elements bs_set in
+                   let cuts = Cut_order.ordered_cuts ?at:cut_order_at bs_set in
                    let modulus = 1 + List.length cuts in
                    if modulus <= 0 then None else Some (modulus, cuts))
               | _ -> None
@@ -671,7 +640,7 @@ let discretize (e : texpr) : expr =
   in
   aux e
 
-let discretize_top (e : texpr) : expr =
+let discretize_top ?cut_order_at (e : texpr) : expr =
   let (return_type, _) = e in
   Ast.set_cut_bags_to_top return_type;
-  discretize e
+  discretize ?cut_order_at e

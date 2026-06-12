@@ -5,6 +5,14 @@ let transform source =
   let texpr = Slice.Inference.infer expr in
   Slice.Discretization.discretize_top texpr
 
+let transform_at param value source =
+  let expr = Slice.Parse.parse_expr source in
+  let texpr = Slice.Inference.infer expr in
+  let cut_order_at : Slice.Cut_order.at =
+    { Slice.Cut_order.param = param; value }
+  in
+  Slice.Discretization.discretize_top ~cut_order_at texpr
+
 let adev_gradient source =
   let expr = Slice.Parse.parse_expr source in
   let texpr = Slice.Inference.infer expr in
@@ -16,7 +24,7 @@ let adev_dual_after_discretize source =
   Slice.Adev.dual_expectation texpr
 
 let adev_dual_after_discretize_at param value source =
-  let transformed = transform source in
+  let transformed = transform_at param value source in
   let texpr = Slice.Inference.infer transformed in
   let raw = Slice.Adev.dual_expectation_raw ~param texpr in
   let simplified = Slice.Adev.dual_expectation ~param texpr in
@@ -50,6 +58,53 @@ let eval_dual_with_theta theta expr =
   | v ->
       assert_failure
         ("expected dual float pair, got: " ^ Slice.Ast.string_of_value v)
+
+let cdf_point = function
+  | Slice.Ast.ExprNode (Slice.Ast.Cdf (_, point))
+  | Slice.Ast.ExprNode (Slice.Ast.CdfExpr (_, point)) -> Some point
+  | _ -> None
+
+let right_cdf_point = function
+  | Slice.Ast.ExprNode (Slice.Ast.Sub (right_cdf, _)) -> cdf_point right_cdf
+  | _ -> None
+
+let generated_distribution_cut_points transformed =
+  match transformed with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Let (_, Slice.Ast.ExprNode (Slice.Ast.DistrCase cases), _)) ->
+      List.filter_map right_cdf_point (List.map snd cases)
+  | _ ->
+      assert_failure
+        ("expected top-level let-bound discrete case, got: "
+         ^ Slice.Pretty.string_of_expr_plain transformed)
+
+let fin_cmp_rhs_index = function
+  | Slice.Ast.ExprNode
+      (Slice.Ast.FinCmp
+         (_, _, Slice.Ast.ExprNode (Slice.Ast.FinConst (k, n)), _, _)) ->
+      (k, n)
+  | e ->
+      assert_failure
+        ("expected finite comparison against finite constant, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let assert_nested_cut_indices expected_outer expected_inner transformed =
+  match transformed with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Let
+         ( _
+         , Slice.Ast.ExprNode (Slice.Ast.DistrCase _)
+         , Slice.Ast.ExprNode
+             (Slice.Ast.If
+                ( outer_cmp
+                , Slice.Ast.ExprNode (Slice.Ast.If (inner_cmp, _, _))
+                , _ )))) ->
+      assert_equal expected_outer (fin_cmp_rhs_index outer_cmp);
+      assert_equal expected_inner (fin_cmp_rhs_index inner_cmp)
+  | _ ->
+      assert_failure
+        ("expected nested finite comparisons, got: "
+         ^ Slice.Pretty.string_of_expr_plain transformed)
 
 let test_typing _ =
   let expr = Slice.Parse.parse_expr "let x = uniform(0, 1) in if x < 0.5 then 0 else 1" in
@@ -159,6 +214,36 @@ let test_adev_dual_at_can_use_non_theta_parameter _ =
         ("expected non-theta AD-at output to be a constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain simplified)
 
+let test_discretize_at_orders_theta_squared_before_theta _ =
+  let transformed =
+    transform_at "theta" 0.5
+      "let x = uniform(0, 1) in if x < theta then if x < theta * theta then 1 else 2 else 3"
+  in
+  let points =
+    List.map Slice.Pretty.string_of_expr_plain
+      (generated_distribution_cut_points transformed)
+  in
+  assert_equal
+    ~printer:(String.concat "; ")
+    ["(theta * theta)"; "theta"]
+    points;
+  assert_nested_cut_indices (2, 3) (1, 3) transformed
+
+let test_discretize_at_orders_theta_before_theta_plus_one _ =
+  let transformed =
+    transform_at "theta" 0.5
+      "let x = uniform(0, 1) in if x < theta then if x < theta + 1 then 1 else 2 else 3"
+  in
+  let points =
+    List.map Slice.Pretty.string_of_expr_plain
+      (generated_distribution_cut_points transformed)
+  in
+  assert_equal
+    ~printer:(String.concat "; ")
+    ["theta"; "(theta + 1)"]
+    points;
+  assert_nested_cut_indices (1, 3) (2, 3) transformed
+
 let suite =
   "Slice transformation tests" >:::
   [ "test_typing" >:: test_typing
@@ -169,6 +254,8 @@ let suite =
   ; "test_adev_uniform_cdf_gradient_simplifies" >:: test_adev_uniform_cdf_gradient_simplifies
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
+  ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta
+  ; "test_discretize_at_orders_theta_before_theta_plus_one" >:: test_discretize_at_orders_theta_before_theta_plus_one
   ]
 
 let () = run_test_tt_main suite
