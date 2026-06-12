@@ -2,6 +2,38 @@ open Ast
 
 module StringMap = Map.Make(String)
 
+(* This is very preliminary so far. It simplies raw AD dual programs, giving the tuple (expected, derivative).
+So far:
+
+Constant-folds arithmetic:
+1 + 2 -> 3
+x + 0 -> x
+x * 1 -> x
+x * 0 -> 0
+x / 1 -> x
+x - x -> 0
+
+Simplifies pair projections:
+fst (a, b) -> a
+snd (a, b) -> b
+
+Evaluates known finite comparisons:
+0#2 <#2 1#2 -> true
+1#2 <#2 1#2 -> false
+0#2 ==#2 0#2 -> true
+
+Simplifies conditionals with known conditions:
+if true then e1 else e2 -> e1
+if false then e1 else e2 -> e2
+
+Inlines very simple let bindings:
+finite constants
+float constants
+booleans
+unit/nil
+simple pairs of those
+*)
+
 let node e = ExprNode e
 let mk_const f = node (Const f)
 let mk_bool b = node (BoolConst b)
