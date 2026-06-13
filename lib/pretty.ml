@@ -115,6 +115,8 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | Sub (e1, e2) -> Printf.sprintf "(%s - %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Mul (e1, e2) -> Printf.sprintf "(%s * %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Div (e1, e2) -> Printf.sprintf "(%s / %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
+  | SpecialFunc (name, args) ->
+      Printf.sprintf "%s(%s)" name (String.concat ", " (List.map string_of_expr_plain args))
   | Cdf (d, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_sample_plain d) (string_of_expr_plain e1)
   | CdfExpr (k, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_expr_plain k) (string_of_expr_plain e1)
 
@@ -283,6 +285,10 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
   | Div (e1, e2) ->
       Printf.sprintf "(%s %s/%s %s)"
         (string_of_expr_indented ~indent e1) operator_color reset_color (string_of_expr_indented ~indent e2)
+  | SpecialFunc (name, args) ->
+      Printf.sprintf "%s%s%s(%s)"
+        keyword_color name reset_color
+        (String.concat ", " (List.map (string_of_expr_indented ~indent) args))
   | Cdf (d, e1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_sample ~indent d) (string_of_expr_indented ~indent e1)
@@ -444,6 +450,10 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
   | Div (te1, te2) ->
       Printf.sprintf "(%s %s/%s %s)"
         (string_of_texpr_indented ~indent te1) operator_color reset_color (string_of_texpr_indented ~indent te2)
+  | SpecialFunc (name, args) ->
+      Printf.sprintf "%s%s%s(%s)"
+        keyword_color name reset_color
+        (String.concat ", " (List.map (string_of_texpr_indented ~indent) args))
   | Cdf (d, te1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_asample ~indent d) (string_of_texpr_indented ~indent te1)

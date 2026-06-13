@@ -57,6 +57,7 @@ let rec texpr_to_expr ((_, TAExprNode ae) : texpr) : expr =
   | Sub (e1, e2) -> ExprNode (Sub (texpr_to_expr e1, texpr_to_expr e2))
   | Mul (e1, e2) -> ExprNode (Mul (texpr_to_expr e1, texpr_to_expr e2))
   | Div (e1, e2) -> ExprNode (Div (texpr_to_expr e1, texpr_to_expr e2))
+  | SpecialFunc (name, args) -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args))
   | Cdf (d, e1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr e1))
   | CdfExpr (k, e1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr e1))
 
@@ -116,6 +117,7 @@ let rec texpr_contains_sample ((_, TAExprNode ae) : texpr) : bool =
       List.exists (fun (b, p) -> texpr_contains_sample b || texpr_contains_sample p) cases
   | Cdf (_, e1) -> texpr_contains_sample e1
   | CdfExpr (k, e1) -> texpr_contains_sample k || texpr_contains_sample e1
+  | SpecialFunc (_, args) -> List.exists texpr_contains_sample args
 
 (* If a float-typed expression has a single symbolic identity and a
    finite cut bag of symbolic cuts, return [Some (FinConst idx n)]
@@ -286,6 +288,10 @@ let discretize ?cut_order_at (e : texpr) : expr =
             match try_emit_kernel_discrete ?cut_order_at ty kernel_expr (ty, TAExprNode ae_node) with
             | Some e -> e
             | None -> kernel_expr)
+    | SpecialFunc (name, args) ->
+        (match try_finconst_from_sym ?cut_order_at ty with
+         | Some e -> e
+         | None -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args)))
     | Cdf (d, te1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr te1))
     | CdfExpr (k, te1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr te1))
 

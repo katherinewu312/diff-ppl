@@ -170,6 +170,15 @@ and det_ad env (ty, TAExprNode ae) =
       Cdf_ad.cdf (sample_dual env dist_exp) (det_ad env point)
   | CdfExpr (kernel, point) ->
       Cdf_ad.cdf_expr (det_ad env kernel) (det_ad env point)
+  | SpecialFunc (name, args) ->
+      let dargs = List.map (det_ad env) args in
+      let primal_args = List.map dual_primal dargs in
+      if is_float_ty ty then
+        pair
+          (node (SpecialFunc (name, primal_args)))
+          (runtime_error ("differentiation of special function " ^ name ^ " is not implemented"))
+      else
+        node (SpecialFunc (name, primal_args))
 
   | RuntimeError msg ->
       if is_float_ty ty then dual_runtime msg else node (RuntimeError msg)
@@ -276,7 +285,7 @@ and trans env ((_, TAExprNode ae) as te) k =
         trans env e2 (fun d2 -> k (node (Assign (d1, d2)))))
 
   | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil
-  | Unit | Cdf _ | CdfExpr _
+  | Unit | Cdf _ | CdfExpr _ | SpecialFunc _
   | RuntimeError _ ->
       k (det_ad env te)
 

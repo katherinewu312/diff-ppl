@@ -23,6 +23,11 @@ let adev_dual_after_discretize source =
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.dual_expectation texpr
 
+let adev_dual_raw_after_discretize source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Adev.dual_expectation_raw texpr
+
 let adev_dual_after_discretize_at param value source =
   let transformed = transform_at param value source in
   let texpr = Slice.Inference.infer transformed in
@@ -161,6 +166,50 @@ let test_adev_uniform_cdf_gradient_simplifies _ =
     1.0
     (eval_float_with_theta 0.3 grad)
 
+let test_adev_gaussian_cdf_dual_simplifies _ =
+  let raw = adev_dual_raw_after_discretize "gaussian(0, 1) < theta" in
+  assert_bool "raw gaussian CDF AD should expose an erf closed form"
+    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "erf(");
+  let dual = adev_dual_after_discretize "gaussian(0, 1) < theta" in
+  let primal, tangent = eval_dual_with_theta 0.0 dual in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.5
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.3989422804014327
+    tangent
+
+let test_adev_beta_cdf_dual_simplifies_at _ =
+  let raw = adev_dual_raw_after_discretize "beta(2, 3) < theta" in
+  assert_bool "raw beta CDF AD should expose a beta_inc closed form"
+    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "beta_inc(");
+  let _, simplified =
+    adev_dual_after_discretize_at "theta" 0.4 "beta(2, 3) < theta"
+  in
+  match simplified with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Pair
+         (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        0.5248
+        primal;
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        1.728
+        tangent
+  | _ ->
+      assert_failure
+        ("expected beta AD-at output to be a constant dual pair, got: "
+         ^ Slice.Pretty.string_of_expr_plain simplified)
+
 let test_adev_dual_at_substitutes_raw_and_simplifies _ =
   let raw, simplified =
     adev_dual_after_discretize_at "theta" 0.3 "uniform(0, 1) < theta"
@@ -252,6 +301,8 @@ let suite =
   ; "test_adev_includes_probability_and_body_derivatives" >:: test_adev_includes_probability_and_body_derivatives
   ; "test_adev_uniform_cdf_dual_simplifies" >:: test_adev_uniform_cdf_dual_simplifies
   ; "test_adev_uniform_cdf_gradient_simplifies" >:: test_adev_uniform_cdf_gradient_simplifies
+  ; "test_adev_gaussian_cdf_dual_simplifies" >:: test_adev_gaussian_cdf_dual_simplifies
+  ; "test_adev_beta_cdf_dual_simplifies_at" >:: test_adev_beta_cdf_dual_simplifies_at
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
   ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta

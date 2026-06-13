@@ -51,6 +51,21 @@ let const_value = function
   | ExprNode (Const f) -> Some f
   | _ -> None
 
+let special_value name args =
+  match name, args with
+  | "exp", [x] -> Some (exp x)
+  | "log", [x] -> Some (log x)
+  | "sqrt", [x] -> Some (sqrt x)
+  | "pow", [x; y] -> Some (x ** y)
+  | "erf", [x] -> Some (Gsl.Sf.erf x)
+  | "atan", [x] -> Some (atan x)
+  | "abs", [x] -> Some (abs_float x)
+  | "beta", [x; y] -> Some (Gsl.Sf.beta x y)
+  | "beta_inc", [a; b; x] -> Some (Gsl.Sf.beta_inc a b x)
+  | "gamma", [x] -> Some (Gsl.Sf.gamma x)
+  | "gamma_inc_P", [a; x] -> Some (Gsl.Sf.gamma_inc_P a x)
+  | _ -> None
+
 let is_zero = function
   | ExprNode (Const f) -> f = 0.0
   | _ -> false
@@ -90,6 +105,15 @@ let mk_div a b =
   | _, Some 1.0 -> a
   | _ when a = b -> mk_const 1.0
   | _ -> node (Div (a, b))
+
+let mk_special name args =
+  match List.map const_value args with
+  | values when List.for_all Option.is_some values ->
+      let floats = List.map Option.get values in
+      (match special_value name floats with
+       | Some f -> mk_const f
+       | None -> node (SpecialFunc (name, args)))
+  | _ -> node (SpecialFunc (name, args))
 
 let bool_value = function
   | ExprNode (BoolConst b) -> Some b
@@ -216,6 +240,7 @@ and expr_env env (ExprNode e) =
   | Sub (e1, e2) -> mk_sub (expr_env env e1) (expr_env env e2)
   | Mul (e1, e2) -> mk_mul (expr_env env e1) (expr_env env e2)
   | Div (e1, e2) -> mk_div (expr_env env e1) (expr_env env e2)
+  | SpecialFunc (name, args) -> mk_special name (List.map (expr_env env) args)
   | Cdf (d, e1) -> node (Cdf (sample_env env d, expr_env env e1))
   | CdfExpr (k, e1) -> node (CdfExpr (expr_env env k, expr_env env e1))
 
@@ -278,6 +303,8 @@ let rec subst_var (name : string) (replacement : expr) (ExprNode e) : expr =
   | Sub (e1, e2) -> node (Sub (subst_var name replacement e1, subst_var name replacement e2))
   | Mul (e1, e2) -> node (Mul (subst_var name replacement e1, subst_var name replacement e2))
   | Div (e1, e2) -> node (Div (subst_var name replacement e1, subst_var name replacement e2))
+  | SpecialFunc (func, args) ->
+      node (SpecialFunc (func, List.map (subst_var name replacement) args))
   | Cdf (d, e1) -> node (Cdf (subst_sample name replacement d, subst_var name replacement e1))
   | CdfExpr (k, e1) -> node (CdfExpr (subst_var name replacement k, subst_var name replacement e1))
 

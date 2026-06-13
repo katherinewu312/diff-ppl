@@ -222,6 +222,22 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
   | Mul (e1, e2) -> arith_eval env e1 e2 ( *. ) "Mul"
   | Div (e1, e2) -> arith_eval env e1 e2 (/.) "Div"
 
+  | SpecialFunc (name, args) ->
+      let floats =
+        List.map
+          (fun e ->
+             match eval env e with
+             | VFloat f -> f
+             | _ ->
+                 raise
+                   (RuntimeError
+                      ("Special function " ^ name ^ " expects float arguments")))
+          args
+      in
+      (match Simplify.special_value name floats with
+       | Some f -> VFloat f
+       | None -> raise (RuntimeError ("Unknown special function: " ^ name)))
+
   | Cdf (dist_exp, e_point) ->
       let dist = eval_dist env dist_exp in
       let x = match eval env e_point with

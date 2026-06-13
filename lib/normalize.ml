@@ -30,6 +30,11 @@ let rec try_eval_const (ExprNode e : expr) : float option =
        | Some _, Some 0.0 -> None
        | Some x, Some y -> Some (x /. y)
        | _ -> None)
+  | SpecialFunc (name, args) ->
+      let values = List.map try_eval_const args in
+      if List.for_all Option.is_some values then
+        Simplify.special_value name (List.map Option.get values)
+      else None
   | _ -> None
 and bin_const e1 e2 op =
   match try_eval_const e1, try_eval_const e2 with
@@ -73,6 +78,8 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
         contains_sample_env env b || contains_sample_env env p) cases
   | Cdf (_, e1) -> contains_sample_env env e1
   | CdfExpr (k, e1) -> contains_sample_env env k || contains_sample_env env e1
+  | SpecialFunc (_, args) ->
+      List.exists (contains_sample_env env) args
 
 let contains_sample (e : expr) : bool =
   contains_sample_env StringSet.empty e
@@ -265,6 +272,8 @@ let rec normalise_env (env : StringSet.t) (e : expr) : expr =
   | Sub (e1, e2) -> ExprNode (Sub (normalise_env env e1, normalise_env env e2))
   | Mul (e1, e2) -> ExprNode (Mul (normalise_env env e1, normalise_env env e2))
   | Div (e1, e2) -> ExprNode (Div (normalise_env env e1, normalise_env env e2))
+  | SpecialFunc (name, args) ->
+      ExprNode (SpecialFunc (name, List.map (normalise_env env) args))
   | Cdf (Distr1 (k, e1), e2) -> ExprNode (Cdf (Distr1 (k, normalise_env env e1), normalise_env env e2))
   | Cdf (Distr2 (k, e1, e2), e3) -> ExprNode (Cdf (Distr2 (k, normalise_env env e1, normalise_env env e2), normalise_env env e3))
   | CdfExpr (k, e1) -> ExprNode (CdfExpr (normalise_env env k, normalise_env env e1))

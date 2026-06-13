@@ -43,6 +43,10 @@ type 'a expr_generic =
   | Sub of 'a * 'a
   | Mul of 'a * 'a
   | Div of 'a * 'a
+  (* Internal generated special functions used by
+     closed-form AD of CDF expressions (e.g. erf, exp, etc.). e.g. allows for stuff like: CDF(gaussian(0, 1), theta) --> 0.5 * (1 + erf(theta / sqrt(2))).
+     These are not currently parsed from Slice syntax. *)
+  | SpecialFunc of string * 'a list
   (* CDF of a continuous distribution evaluated at a point.
      Emitted only by the discretizer when symbolic cuts are present. *)
   | Cdf of 'a sample * 'a

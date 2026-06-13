@@ -155,6 +155,25 @@ let infer (e : expr) : texpr =
     | Mul (e1, e2) -> arith_aux env orig_expr e1 e2 "Mul" (fun a b -> Mul (a, b))
     | Div (e1, e2) -> arith_aux env orig_expr e1 e2 "Div" (fun a b -> Div (a, b))
 
+    | SpecialFunc (name, args) ->
+      let typed_args =
+        List.map
+          (fun e ->
+             let t, a = aux env e in
+             let arg_cut = Ast.fresh_cut_bag () in
+             let arg_float = Lats.fresh_float_bag () in
+             let arg_sym = Ast.fresh_sym_bag () in
+             (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+              with Failure msg ->
+                failwith ("Type error in special function " ^ name ^ ": " ^ msg));
+             (t, a))
+          args
+      in
+      let cuts_bag = Ast.fresh_cut_bag () in
+      let floats_bag = Lats.fresh_float_bag () in
+      let sym_bag = singleton_sym_bag orig_expr in
+      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (SpecialFunc (name, typed_args)))
+
     | Cdf (dist_exp, point_e) ->
       (* CDF nodes are emitted by the discretizer and may be consumed
          by later source-to-source passes, so preserve their shape in

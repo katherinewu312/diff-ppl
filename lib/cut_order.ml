@@ -73,6 +73,11 @@ and eval_float_env env (ExprNode e) : float option =
        | Some _, Some 0.0 -> None
        | Some f1, Some f2 -> Some (f1 /. f2)
        | _ -> None)
+  | SpecialFunc (name, args) ->
+      let values = List.map (eval_float_env env) args in
+      if List.for_all Option.is_some values then
+        Simplify.special_value name (List.map Option.get values)
+      else None
   | If (cond, e_then, e_else) ->
       (match eval_bool_env env cond with
        | Some true -> eval_float_env env e_then
