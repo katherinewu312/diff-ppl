@@ -305,7 +305,7 @@ let gradient_raw ?(param = "theta") te =
   dual_tangent (dual_expectation_raw ~param te)
 
 let dual_expectation ?(param = "theta") te =
-  Simplify.expr (dual_expectation_raw ~param te)
+  Simplify.algebraic (dual_expectation_raw ~param te)
 
 let gradient ?(param = "theta") te =
-  Simplify.expr (gradient_raw ~param te)
+  Simplify.algebraic (gradient_raw ~param te)

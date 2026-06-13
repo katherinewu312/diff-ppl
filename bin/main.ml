@@ -50,7 +50,7 @@ let apply_eval_point_simplified at e =
   match at with
   | None -> e
   | Some { param; value } ->
-      Slice.Simplify.expr (Slice.Simplify.subst_float param value e)
+      Slice.Simplify.algebraic (Slice.Simplify.subst_float param value e)
 
 let run ~print_all ~mode ~at filename =
   let source = read_file filename in

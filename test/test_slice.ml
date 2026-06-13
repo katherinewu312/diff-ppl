@@ -34,7 +34,7 @@ let adev_dual_after_discretize_at param value source =
   let raw = Slice.Adev.dual_expectation_raw ~param texpr in
   let simplified = Slice.Adev.dual_expectation ~param texpr in
   ( Slice.Simplify.subst_float param value raw
-  , Slice.Simplify.expr (Slice.Simplify.subst_float param value simplified) )
+  , Slice.Simplify.algebraic (Slice.Simplify.subst_float param value simplified) )
 
 let adev_gradient_after_discretize source =
   let transformed = transform source in
@@ -263,6 +263,36 @@ let test_adev_dual_at_can_use_non_theta_parameter _ =
         ("expected non-theta AD-at output to be a constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain simplified)
 
+let test_adev_dual_simplifies_polynomial_components _ =
+  let source =
+    "if discrete(theta, 1 - theta) <#2 1#2 then theta else theta + 1"
+  in
+  let raw = adev_dual_raw_after_discretize source in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw AD program should still expose fst projections"
+    (contains_substring raw_plain "fst");
+  assert_bool "raw AD program should still expose snd projections"
+    (contains_substring raw_plain "snd");
+  match adev_dual_after_discretize source with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Pair
+         (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        1.0
+        primal;
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        0.0
+        tangent
+  | e ->
+      assert_failure
+        ("expected simplified AD dual to be (1, 0), got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
 let test_discretize_at_orders_theta_squared_before_theta _ =
   let transformed =
     transform_at "theta" 0.5
@@ -305,6 +335,7 @@ let suite =
   ; "test_adev_beta_cdf_dual_simplifies_at" >:: test_adev_beta_cdf_dual_simplifies_at
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
+  ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta
   ; "test_discretize_at_orders_theta_before_theta_plus_one" >:: test_discretize_at_orders_theta_before_theta_plus_one
   ]

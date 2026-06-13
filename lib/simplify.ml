@@ -2,7 +2,7 @@ open Ast
 
 module StringMap = Map.Make(String)
 
-(* This is very preliminary so far. It simplies raw AD dual programs, giving the tuple (expected, derivative).
+(* This is very preliminary so far. It simplies raw AD dual programs, giving the output tuple (expected, derivative).
 So far:
 
 Constant-folds arithmetic:
@@ -25,6 +25,11 @@ Evaluates known finite comparisons:
 Simplifies conditionals with known conditions:
 if true then e1 else e2 -> e1
 if false then e1 else e2 -> e2
+
+The separate [algebraic] pass below additionally normalizes polynomial
+float expressions so post-ADEV primal/tangent components can combine
+like terms:
+(theta * theta) + ((1 - theta) * (theta + 1)) -> 1
 
 Inlines very simple let bindings:
 finite constants
@@ -315,3 +320,208 @@ and subst_sample name replacement = function
 (* Walks an AST and replaces free occurrences of a variable, like theta, with a float constant. *)
 let subst_float name value e =
   subst_var name (mk_const value) e
+
+
+(* Tries to bring a polynomial into a canonical form.
+
+It handles arithmetic consisting of:
+
+constants
+variables
++
+-
+*
+division by numeric constants
+
+So it can combine like terms and cancel polynomial expressions, e.g.
+
+theta + theta
+=> 2 * theta
+
+theta - theta
+=> 0
+
+theta * theta + (1 - theta) * (theta + 1)
+=> 1
+
+(theta + theta) + ((1 - theta) + (0 - (theta + 1)))
+=> 0
+
+*)
+module Monomial = struct
+  type t = (string * int) list
+  let compare = compare
+end
+
+module PolyMap = Map.Make(Monomial)
+
+let poly_add_term mono coeff poly =
+  if coeff = 0.0 then poly
+  else
+    let old =
+      match PolyMap.find_opt mono poly with
+      | Some c -> c
+      | None -> 0.0
+    in
+    let coeff' = old +. coeff in
+    if coeff' = 0.0 then PolyMap.remove mono poly
+    else PolyMap.add mono coeff' poly
+
+let poly_const c =
+  poly_add_term [] c PolyMap.empty
+
+let poly_var x =
+  poly_add_term [x, 1] 1.0 PolyMap.empty
+
+let poly_add p q =
+  PolyMap.fold poly_add_term p q
+
+let poly_scale c p =
+  if c = 0.0 then PolyMap.empty
+  else PolyMap.fold (fun mono coeff acc -> poly_add_term mono (c *. coeff) acc) p PolyMap.empty
+
+let poly_sub p q =
+  poly_add p (poly_scale (-1.0) q)
+
+let monomial_mul m1 m2 =
+  let add_power powers (x, n) =
+    let old =
+      match StringMap.find_opt x powers with
+      | Some n -> n
+      | None -> 0
+    in
+    let n' = old + n in
+    if n' = 0 then StringMap.remove x powers
+    else StringMap.add x n' powers
+  in
+  StringMap.bindings
+    (List.fold_left add_power
+       (List.fold_left add_power StringMap.empty m1)
+       m2)
+
+let poly_mul p q =
+  PolyMap.fold
+    (fun m1 c1 acc ->
+       PolyMap.fold
+         (fun m2 c2 acc' ->
+            poly_add_term (monomial_mul m1 m2) (c1 *. c2) acc')
+         q acc)
+    p PolyMap.empty
+
+let poly_as_const p =
+  match PolyMap.bindings p with
+  | [] -> Some 0.0
+  | [([], c)] -> Some c
+  | _ -> None
+
+let option_map2 f x y =
+  match x, y with
+  | Some x', Some y' -> Some (f x' y')
+  | _ -> None
+
+let rec polynomial_of_expr (ExprNode e) =
+  match e with
+  | Const c -> Some (poly_const c)
+  | Var x -> Some (poly_var x)
+  | Add (e1, e2) ->
+      option_map2 poly_add (polynomial_of_expr e1) (polynomial_of_expr e2)
+  | Sub (e1, e2) ->
+      option_map2 poly_sub (polynomial_of_expr e1) (polynomial_of_expr e2)
+  | Mul (e1, e2) ->
+      option_map2 poly_mul (polynomial_of_expr e1) (polynomial_of_expr e2)
+  | Div (e1, e2) ->
+      (match polynomial_of_expr e1, polynomial_of_expr e2 with
+       | Some p1, Some p2 ->
+           (match poly_as_const p2 with
+            | Some c when c <> 0.0 -> Some (poly_scale (1.0 /. c) p1)
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+let rec multiply_factors = function
+  | [] -> mk_const 1.0
+  | [x] -> x
+  | x :: xs -> mk_mul x (multiply_factors xs)
+
+let rec repeat_expr n e =
+  if n <= 0 then []
+  else e :: repeat_expr (n - 1) e
+
+let monomial_to_expr mono =
+  let factors =
+    List.concat
+      (List.map
+         (fun (x, n) -> repeat_expr n (node (Var x)))
+         mono)
+  in
+  multiply_factors factors
+
+let term_to_expr coeff mono =
+  match mono with
+  | [] -> mk_const coeff
+  | _ ->
+      let mono_expr = monomial_to_expr mono in
+      if coeff = 1.0 then mono_expr
+      else mk_mul (mk_const coeff) mono_expr
+
+let sum_exprs = function
+  | [] -> mk_const 0.0
+  | x :: xs -> List.fold_left mk_add x xs
+
+let polynomial_to_expr poly =
+  let terms =
+    PolyMap.bindings poly
+    |> List.map (fun (mono, coeff) -> term_to_expr coeff mono)
+  in
+  sum_exprs terms
+
+let algebraic e =
+  let rec go e =
+    let e' = expr e in
+    match polynomial_of_expr e' with
+    | Some p -> polynomial_to_expr p
+    | None ->
+        (match e' with
+         | ExprNode (Add (e1, e2)) -> mk_add (go e1) (go e2)
+         | ExprNode (Sub (e1, e2)) -> mk_sub (go e1) (go e2)
+         | ExprNode (Mul (e1, e2)) -> mk_mul (go e1) (go e2)
+         | ExprNode (Div (e1, e2)) -> mk_div (go e1) (go e2)
+         | ExprNode (Pair (e1, e2)) -> mk_pair (go e1) (go e2)
+         | ExprNode (First e1) -> mk_first (go e1)
+         | ExprNode (Second e1) -> mk_second (go e1)
+         | ExprNode (Let (x, e1, e2)) -> node (Let (x, go e1, go e2))
+         | ExprNode (If (e1, e2, e3)) -> expr (node (If (go e1, go e2, go e3)))
+         | ExprNode (And (e1, e2)) -> expr (node (And (go e1, go e2)))
+         | ExprNode (Or (e1, e2)) -> expr (node (Or (go e1, go e2)))
+         | ExprNode (Not e1) -> expr (node (Not (go e1)))
+         | ExprNode (Cmp (op, e1, e2, flipped)) ->
+             expr (node (Cmp (op, go e1, go e2, flipped)))
+         | ExprNode (FinCmp (op, e1, e2, n, flipped)) ->
+             expr (node (FinCmp (op, go e1, go e2, n, flipped)))
+         | ExprNode (FinEq (e1, e2, n)) ->
+             expr (node (FinEq (go e1, go e2, n)))
+         | ExprNode (Fun (x, e1)) -> node (Fun (x, go e1))
+         | ExprNode (FuncApp (e1, e2)) -> node (FuncApp (go e1, go e2))
+         | ExprNode (LoopApp (e1, e2, n)) -> node (LoopApp (go e1, go e2, n))
+         | ExprNode (Fix (f, x, e1)) -> node (Fix (f, x, go e1))
+         | ExprNode (Observe e1) -> node (Observe (go e1))
+         | ExprNode (Cons (e1, e2)) -> node (Cons (go e1, go e2))
+         | ExprNode (MatchList (e1, e_nil, y, ys, e_cons)) ->
+             node (MatchList (go e1, go e_nil, y, ys, go e_cons))
+         | ExprNode (Ref e1) -> node (Ref (go e1))
+         | ExprNode (Deref e1) -> node (Deref (go e1))
+         | ExprNode (Assign (e1, e2)) -> node (Assign (go e1, go e2))
+         | ExprNode (Seq (e1, e2)) -> expr (node (Seq (go e1, go e2)))
+         | ExprNode (DiscreteCase cases) ->
+             node (DiscreteCase (List.map (fun (b, p) -> (go b, go p)) cases))
+         | ExprNode (SpecialFunc (name, args)) ->
+             mk_special name (List.map go args)
+         | ExprNode (Cdf (d, e1)) -> node (Cdf (go_sample d, go e1))
+         | ExprNode (CdfExpr (k, e1)) -> node (CdfExpr (go k, go e1))
+         | ExprNode (Sample d) -> node (Sample (go_sample d))
+         | _ -> e')
+  and go_sample = function
+    | Distr1 (kind, e1) -> Distr1 (kind, go e1)
+    | Distr2 (kind, e1, e2) -> Distr2 (kind, go e1, go e2)
+  in
+  go e
