@@ -25,8 +25,8 @@ let rec texpr_to_expr ((_, TAExprNode ae) : texpr) : expr =
   | BoolConst b -> ExprNode (BoolConst b)
   | Let (x, e1, e2) -> ExprNode (Let (x, texpr_to_expr e1, texpr_to_expr e2))
   | Sample d -> ExprNode (Sample (sample_to_expr d))
-  | DistrCase cases ->
-      ExprNode (DistrCase (List.map (fun (b, p) -> (texpr_to_expr b, texpr_to_expr p)) cases))
+  | DiscreteCase cases ->
+      ExprNode (DiscreteCase (List.map (fun (b, p) -> (texpr_to_expr b, texpr_to_expr p)) cases))
   | Cmp (op, e1, e2, f) -> ExprNode (Cmp (op, texpr_to_expr e1, texpr_to_expr e2, f))
   | FinCmp (op, e1, e2, n, f) -> ExprNode (FinCmp (op, texpr_to_expr e1, texpr_to_expr e2, n, f))
   | FinEq (e1, e2, n) -> ExprNode (FinEq (texpr_to_expr e1, texpr_to_expr e2, n))
@@ -113,7 +113,7 @@ let rec texpr_contains_sample ((_, TAExprNode ae) : texpr) : bool =
   | Fun (_, e1) | Fix (_, _, e1) -> texpr_contains_sample e1
   | MatchList (e1, e2, _, _, e3) ->
       texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       List.exists (fun (b, p) -> texpr_contains_sample b || texpr_contains_sample p) cases
   | Cdf (_, e1) -> texpr_contains_sample e1
   | CdfExpr (k, e1) -> texpr_contains_sample k || texpr_contains_sample e1
@@ -160,7 +160,7 @@ let try_finconst_or_default ?cut_order_at (ty : ty) (default : unit -> expr) : e
 
 (* If the given [texpr] is sample-flavored (contains a [Sample]
    somewhere inside it) and its TFloat cut bag is finite and
-   non-empty, emit a [DistrCase] whose probabilities are kernel-
+   non-empty, emit a [DiscreteCase] whose probabilities are kernel-
    CDF expressions of the form [CDF(kernel, cut_i) - CDF(kernel,
    cut_{i-1})].  Returns [None] when no such emission is needed
    (e.g. [te] is a plain constant, or the cut bag is [Top] / empty,
@@ -201,7 +201,7 @@ let try_emit_kernel_discrete ?cut_order_at (ty : ty) (kernel_expr : expr) (te : 
              (ExprNode (FinConst (k, n)), prob)
            )
          in
-         Some (ExprNode (DistrCase cases)))
+         Some (ExprNode (DiscreteCase cases)))
     | _ -> None
 
 let discretize ?cut_order_at (e : texpr) : expr =
@@ -271,7 +271,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
               [FinConst] (e.g. RHS of a comparison like
               [u() < theta + 1]).
            2. The expression contains a [Sample] and has a finite
-              cut bag -> emit a [DistrCase] of kernel-CDF
+              cut bag -> emit a [DiscreteCase] of kernel-CDF
               probabilities (the "non-affine LHS" case).
            3. Otherwise -> keep the arithmetic form. *)
         (match try_finconst_from_sym ?cut_order_at ty with
@@ -379,7 +379,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
                 (ExprNode (FinConst (k, overall_modulus)), prob_expr)
               )
             in
-            ExprNode (DistrCase cases)
+            ExprNode (DiscreteCase cases)
           else
             (* ============ Concrete-cut branch (original logic) ============ *)
             let final_expr_producer (concrete_distr : Distributions.cdistr) : expr =
@@ -411,7 +411,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
                    ExprNode (Const (max 0.0 (min 1.0 prob)))))
                   probs
               in
-              ExprNode (DistrCase distr_cases)
+              ExprNode (DiscreteCase distr_cases)
             in
 
             let get_possible_floats_from_param (param_texpr : texpr) : float list option =
@@ -563,11 +563,11 @@ let discretize ?cut_order_at (e : texpr) : expr =
 
         )
 
-    | DistrCase cases ->
+    | DiscreteCase cases ->
       let discretized_cases =
         List.map (fun (te_branch, te_prob) -> (aux te_branch, aux te_prob)) cases
       in
-      ExprNode (DistrCase discretized_cases)
+      ExprNode (DiscreteCase discretized_cases)
 
     | Cmp (cmp_op, te1, te2, flipped) ->
         let op_name = match cmp_op with

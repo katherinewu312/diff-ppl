@@ -12,7 +12,7 @@ type 'a expr_generic =
   | BoolConst of bool
   | Let    of string * 'a * 'a
   | Sample of 'a sample
-  | DistrCase of ('a * 'a) list      (* probability is now an expression *)
+  | DiscreteCase of ('a * 'a) list      (* probability is now an expression *)
   | Cmp    of cmp_op * 'a * 'a * bool
   | And    of 'a * 'a
   | Or     of 'a * 'a

@@ -184,12 +184,12 @@ and det_ad env (ty, TAExprNode ae) =
       if is_float_ty ty then dual_runtime msg else node (RuntimeError msg)
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before ADEV"
-  | DistrCase _ ->
+  | DiscreteCase _ ->
       unsupported "discrete distribution appeared in deterministic AD position"
 
 and trans env ((_, TAExprNode ae) as te) k =
   match ae with
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       let terms =
         List.map
           (fun (branch, prob) ->

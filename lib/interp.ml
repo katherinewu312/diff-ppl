@@ -33,15 +33,15 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
         | Failure msg -> raise (RuntimeError (Printf.sprintf "Sampling error: %s" msg)) (* Catch unimplemented cases *)
       end
 
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       let r = Random.float 1.0 in
       let rec find_case cumulative_prob case_list =
         match case_list with
-        | [] -> raise (RuntimeError "DistrCase: Random value exceeded total probability (should not happen)")
+        | [] -> raise (RuntimeError "DiscreteCase: Random value exceeded total probability (should not happen)")
         | (e, prob_e) :: rest ->
             let p = match eval env prob_e with
               | VFloat f -> f
-              | _ -> raise (RuntimeError "DistrCase: probability must evaluate to a float")
+              | _ -> raise (RuntimeError "DiscreteCase: probability must evaluate to a float")
             in
             let next_cumulative_prob = cumulative_prob +. p in
             if r <= next_cumulative_prob then eval env e

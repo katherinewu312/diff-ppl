@@ -64,7 +64,7 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | Let (x, e1, e2) ->
       Printf.sprintf "let %s = %s in %s" x (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Sample d -> string_of_sample_plain d
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       let parts = List.map (fun (b, p) ->
         Printf.sprintf "%s: %s" (string_of_expr_plain p) (string_of_expr_plain b)) cases
       in
@@ -155,7 +155,7 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
         keyword_color reset_color variable_color x reset_color e1_str
         keyword_color reset_color indent_str e2_str
   | Sample dist_exp -> string_of_sample ~indent dist_exp
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       let format_case (expr, prob) =
         Printf.sprintf "%s: %s"
           (string_of_expr_indented ~indent prob)
@@ -320,7 +320,7 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
         keyword_color reset_color variable_color x reset_color e1_str
         keyword_color reset_color indent_str e2_str
   | Sample dist_exp -> string_of_asample ~indent dist_exp
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       let format_case (texpr, prob) =
         Printf.sprintf "%s: %s"
           (string_of_texpr_indented ~indent prob)

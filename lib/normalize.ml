@@ -73,7 +73,7 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
   | Fun (_, e1) | Fix (_, _, e1) -> contains_sample_env env e1
   | MatchList (e1, e2, _, _, e3) ->
       contains_sample_env env e1 || contains_sample_env env e2 || contains_sample_env env e3
-  | DistrCase cases ->
+  | DiscreteCase cases ->
       List.exists (fun (b, p) ->
         contains_sample_env env b || contains_sample_env env p) cases
   | Cdf (_, e1) -> contains_sample_env env e1
@@ -236,8 +236,8 @@ let rec normalise_env (env : StringSet.t) (e : expr) : expr =
       ExprNode (Let (x, e1', normalise_env env' e2))
   | Sample (Distr1 (k, e1)) -> ExprNode (Sample (Distr1 (k, normalise_env env e1)))
   | Sample (Distr2 (k, e1, e2)) -> ExprNode (Sample (Distr2 (k, normalise_env env e1, normalise_env env e2)))
-  | DistrCase cases ->
-      ExprNode (DistrCase (List.map (fun (b, p) -> (normalise_env env b, normalise_env env p)) cases))
+  | DiscreteCase cases ->
+      ExprNode (DiscreteCase (List.map (fun (b, p) -> (normalise_env env b, normalise_env env p)) cases))
   | FinCmp (op, e1, e2, n, flipped) ->
       ExprNode (FinCmp (op, normalise_env env e1, normalise_env env e2, n, flipped))
   | FinEq (e1, e2, n) -> ExprNode (FinEq (normalise_env env e1, normalise_env env e2, n))

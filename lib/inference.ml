@@ -305,15 +305,15 @@ let infer (e : expr) : texpr =
         (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Sample dist_exp'))
       )
 
-    | DistrCase cases ->
-      if cases = [] then failwith "DistrCase cannot be empty";
+    | DiscreteCase cases ->
+      if cases = [] then failwith "DiscreteCase cannot be empty";
       (* Type-check probability expressions (must be float) and
          branch expressions; subtype branches into a fresh result. *)
       let result_ty = Ast.fresh_meta () in
       let typed_cases = List.map (fun (branch, prob) ->
         let tb, ab = aux env branch in
         (try sub_type tb result_ty
-         with Failure msg -> failwith ("Type error in DistrCase branches: " ^ msg));
+         with Failure msg -> failwith ("Type error in DiscreteCase branches: " ^ msg));
         let tp, ap = aux env prob in
         (* Probability must be a float (concrete or symbolic).
            We don't check sum-to-one when probabilities are
@@ -322,10 +322,10 @@ let infer (e : expr) : texpr =
         let pf_floats = Lats.fresh_float_bag () in
         let pf_sym = Ast.fresh_sym_bag () in
         (try sub_type tp (TFloat (pf_cuts, pf_floats, pf_sym))
-         with Failure msg -> failwith ("Type error in DistrCase probability: " ^ msg));
+         with Failure msg -> failwith ("Type error in DiscreteCase probability: " ^ msg));
         ((tb, ab), (tp, ap))
       ) cases in
-      (result_ty, TAExprNode (DistrCase typed_cases))
+      (result_ty, TAExprNode (DiscreteCase typed_cases))
 
     | Cmp (cmp_op, e1, e2, flipped) ->
         let t1, a1 = aux env e1 in

@@ -153,8 +153,8 @@ and expr_env env (ExprNode e) =
       else
         node (Let (x, e1', expr_env (StringMap.remove x env) e2))
   | Sample d -> node (Sample (sample_env env d))
-  | DistrCase cases ->
-      node (DistrCase (List.map (fun (b, p) -> (expr_env env b, expr_env env p)) cases))
+  | DiscreteCase cases ->
+      node (DiscreteCase (List.map (fun (b, p) -> (expr_env env b, expr_env env p)) cases))
   | Cmp (op, e1, e2, flipped) ->
       let e1' = expr_env env e1 in
       let e2' = expr_env env e2 in
@@ -259,8 +259,8 @@ let rec subst_var (name : string) (replacement : expr) (ExprNode e) : expr =
       let e2' = if x = name then e2 else subst_var name replacement e2 in
       node (Let (x, e1', e2'))
   | Sample d -> node (Sample (subst_sample name replacement d))
-  | DistrCase cases ->
-      node (DistrCase (List.map (fun (b, p) -> (subst_var name replacement b, subst_var name replacement p)) cases))
+  | DiscreteCase cases ->
+      node (DiscreteCase (List.map (fun (b, p) -> (subst_var name replacement b, subst_var name replacement p)) cases))
   | Cmp (op, e1, e2, flipped) ->
       node (Cmp (op, subst_var name replacement e1, subst_var name replacement e2, flipped))
   | And (e1, e2) -> node (And (subst_var name replacement e1, subst_var name replacement e2))

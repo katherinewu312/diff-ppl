@@ -76,7 +76,7 @@ let right_cdf_point = function
 let generated_distribution_cut_points transformed =
   match transformed with
   | Slice.Ast.ExprNode
-      (Slice.Ast.Let (_, Slice.Ast.ExprNode (Slice.Ast.DistrCase cases), _)) ->
+      (Slice.Ast.Let (_, Slice.Ast.ExprNode (Slice.Ast.DiscreteCase cases), _)) ->
       List.filter_map right_cdf_point (List.map snd cases)
   | _ ->
       assert_failure
@@ -98,7 +98,7 @@ let assert_nested_cut_indices expected_outer expected_inner transformed =
   | Slice.Ast.ExprNode
       (Slice.Ast.Let
          ( _
-         , Slice.Ast.ExprNode (Slice.Ast.DistrCase _)
+         , Slice.Ast.ExprNode (Slice.Ast.DiscreteCase _)
          , Slice.Ast.ExprNode
              (Slice.Ast.If
                 ( outer_cmp
@@ -119,7 +119,7 @@ let test_typing _ =
 let test_discretizes_uniform_comparison _ =
   let transformed = transform "let x = uniform(0, 1) in x < 0.5" in
   match transformed with
-  | Slice.Ast.ExprNode (Let (_, Slice.Ast.ExprNode (Slice.Ast.DistrCase _), _)) -> ()
+  | Slice.Ast.ExprNode (Let (_, Slice.Ast.ExprNode (Slice.Ast.DiscreteCase _), _)) -> ()
   | _ ->
       assert_failure
         ("expected uniform comparison to discretize to a discrete case, got: "

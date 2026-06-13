@@ -198,7 +198,7 @@ atomic_expr:
          probability expression; the i-th branch is the value i#n. *)
       let n = List.length probs in
       let cases = List.mapi (fun i p -> (ExprNode (FinConst (i, n)), p)) probs in
-      ExprNode (DistrCase cases)
+      ExprNode (DiscreteCase cases)
     }
   | UNIFORM LPAREN lo = app_expr COMMA hi = app_expr RPAREN
     { ExprNode (Sample (Distr2 (DUniform, lo, hi))) }
