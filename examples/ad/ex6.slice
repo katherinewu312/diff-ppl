@@ -1,0 +1,2 @@
+let f = fun x -> discrete(x, 1 - x) in 
+if f theta <#2 1#2 then theta else 0

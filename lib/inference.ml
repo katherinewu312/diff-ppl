@@ -31,8 +31,9 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
   | TPair(a1, b1), TPair(a2, b2) ->
       sub_type a1 a2;
       sub_type b1 b2
-  | TFun(a1, b1), TFun(a2, b2) ->
+  | TFun(a1, eff1, b1), TFun(a2, eff2, b2) ->
       sub_type a2 a1;
+      Ast.effect_leq eff1 eff2;
       sub_type b1 b2
   | TList t1, TList t2 -> sub_type t1 t2
   | TRef t1, TRef t2 -> unify t1 t2
@@ -43,8 +44,8 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
     | TFin n -> Ast.assign r (TFin n)
     | TPair (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
-    | TFun (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
-      Ast.assign r (TFun (a_meta, b_meta)); sub_type t_sub t_super
+    | TFun (_, _, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
+      Ast.assign r (TFun (a_meta, Ast.fresh_effect (), b_meta)); sub_type t_sub t_super
     | TFloat (_, _, _) ->
       let b_bag = Ast.fresh_cut_bag () in
       let c_bag = Lats.fresh_float_bag () in
@@ -63,8 +64,8 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
     | TFin n -> Ast.assign r (TFin n)
     | TPair (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
-    | TFun (_, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
-      Ast.assign r (TFun (a_meta, b_meta)); sub_type t_sub t_super
+    | TFun (_, _, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
+      Ast.assign r (TFun (a_meta, Ast.fresh_effect (), b_meta)); sub_type t_sub t_super
     | TFloat (_, _, _) ->
       let b_bag = Ast.fresh_cut_bag () in
       let c_bag = Lats.fresh_float_bag () in
@@ -122,6 +123,12 @@ let sym_cut_val_of_expr (e : expr) : cut_val =
 
 (* Type inference and elaboration: expr -> texpr *)
 let infer (e : expr) : texpr =
+  let mk ty eff ae = (ty, eff, TAExprNode ae) in
+  let pure ty ae = mk ty Pure ae in
+  let prob ty ae = mk ty Prob ae in
+  let ty_of (ty, _, _) = ty in
+  let eff_of (_, eff, _) = eff in
+  let join = Ast.join_effects in
   let rec aux (env : ty StringMap.t) (orig_expr : expr) : texpr =
     let ExprNode e_node = orig_expr in
     match e_node with
@@ -129,26 +136,26 @@ let infer (e : expr) : texpr =
       let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
       let consts_bag_ref = Lats.FloatLat.create (Finite (FloatSet.singleton f)) in
       let sym_bag_ref = Ast.SymLat.create (Finite Ast.SymSet.empty) in
-      (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Const f))
+      pure (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Const f)
     | BoolConst b ->
-      (TBool, TAExprNode (BoolConst b))
+      pure TBool (BoolConst b)
     | Var x ->
       (try
         let ty = StringMap.find x env in
-        (ty, TAExprNode (Var x))
+        pure ty (Var x)
        with Not_found ->
         (* Free variables are treated as symbolic floats whose only
            reachable value is the variable itself. *)
         let cuts_bag = Ast.fresh_cut_bag () in
         let floats_bag = Lats.fresh_float_bag () in
         let sym_bag = singleton_sym_bag (ExprNode (Var x)) in
-        (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Var x)))
+        pure (TFloat (cuts_bag, floats_bag, sym_bag)) (Var x))
 
     | Let (x, e1, e2) ->
-      let t1, a1 = aux env e1 in
+      let t1, eff1, a1 = aux env e1 in
       let env' = StringMap.add x t1 env in
-      let t2, a2 = aux env' e2 in
-      (t2, TAExprNode (Let (x, (t1,a1), (t2,a2))))
+      let t2, eff2, a2 = aux env' e2 in
+      mk t2 (join [eff1; eff2]) (Let (x, (t1, eff1, a1), (t2, eff2, a2)))
 
     | Add (e1, e2) -> arith_aux env orig_expr e1 e2 "Add" (fun a b -> Add (a, b))
     | Sub (e1, e2) -> arith_aux env orig_expr e1 e2 "Sub" (fun a b -> Sub (a, b))
@@ -159,33 +166,35 @@ let infer (e : expr) : texpr =
       let typed_args =
         List.map
           (fun e ->
-             let t, a = aux env e in
+             let t, eff, a = aux env e in
              let arg_cut = Ast.fresh_cut_bag () in
              let arg_float = Lats.fresh_float_bag () in
              let arg_sym = Ast.fresh_sym_bag () in
              (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
               with Failure msg ->
                 failwith ("Type error in special function " ^ name ^ ": " ^ msg));
-             (t, a))
+             (t, eff, a))
           args
       in
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (SpecialFunc (name, typed_args)))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+        (join (List.map eff_of typed_args))
+        (SpecialFunc (name, typed_args))
 
     | Cdf (dist_exp, point_e) ->
       (* CDF nodes are emitted by the discretizer and may be consumed
          by later source-to-source passes, so preserve their shape in
          the typed AST instead of replacing them with a dummy const. *)
       let infer_cdf_arg e arg_name =
-        let t, a = aux env e in
+        let t, eff, a = aux env e in
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
         (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
          with Failure msg -> failwith ("Type error in CDF " ^ arg_name ^ ": " ^ msg));
-        (t, a)
+        (t, eff, a)
       in
       let dist_exp' =
         match dist_exp with
@@ -201,24 +210,33 @@ let infer (e : expr) : texpr =
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (Cdf (dist_exp', point_te)))
+      let dist_eff =
+        match dist_exp' with
+        | Distr1 (_, te1) -> eff_of te1
+        | Distr2 (_, te1, te2) -> join [eff_of te1; eff_of te2]
+      in
+      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+        (join [dist_eff; eff_of point_te])
+        (Cdf (dist_exp', point_te))
 
     | CdfExpr (kernel_e, point_e) ->
       let infer_float e arg_name =
-        let t, a = aux env e in
+        let t, eff, a = aux env e in
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
         (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
          with Failure msg -> failwith ("Type error in CDF expression " ^ arg_name ^ ": " ^ msg));
-        (t, a)
+        (t, eff, a)
       in
       let kernel_te = infer_float kernel_e "kernel argument" in
       let point_te = infer_float point_e "point argument" in
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      (TFloat (cuts_bag, floats_bag, sym_bag), TAExprNode (CdfExpr (kernel_te, point_te)))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+        (join [eff_of kernel_te; eff_of point_te])
+        (CdfExpr (kernel_te, point_te))
 
     | Sample dist_exp ->
       let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
@@ -257,7 +275,7 @@ let infer (e : expr) : texpr =
 
       (match dist_exp with
       | Distr1 (dist_kind, arg_e) ->
-          let t_arg, a_arg = aux env arg_e in
+          let t_arg, eff_arg, a_arg = aux env arg_e in
           let t_arg_cut_bag = Ast.fresh_cut_bag () in
           let t_arg_float_bag = Lats.fresh_float_bag () in
           let t_arg_sym_bag = Ast.fresh_sym_bag () in
@@ -270,12 +288,12 @@ let infer (e : expr) : texpr =
           make_output_top_if_input_boundbag_is_top t_arg_cut_bag;
           make_input_top_if_output_boundbag_is_top t_arg_cut_bag cuts_bag_ref;
 
-          let dist_exp' = Distr1 (dist_kind, (t_arg, a_arg)) in
-          (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Sample dist_exp'))
+          let dist_exp' = Distr1 (dist_kind, (t_arg, eff_arg, a_arg)) in
+          prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Sample dist_exp')
 
       | Distr2 (dist_kind, arg1_e, arg2_e) ->
-        let t1, a1 = aux env arg1_e in
-        let t2, a2 = aux env arg2_e in
+        let t1, eff1, a1 = aux env arg1_e in
+        let t2, eff2, a2 = aux env arg2_e in
         let t1_cut_bag = Ast.fresh_cut_bag () in
         let t1_float_bag = Lats.fresh_float_bag () in
         let t1_sym_bag = Ast.fresh_sym_bag () in
@@ -301,8 +319,8 @@ let infer (e : expr) : texpr =
         make_input_top_if_output_boundbag_is_top t1_cut_bag cuts_bag_ref;
         make_input_top_if_output_boundbag_is_top t2_cut_bag cuts_bag_ref;
 
-        let dist_exp' = Distr2 (dist_kind, (t1, a1), (t2, a2)) in
-        (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref), TAExprNode (Sample dist_exp'))
+        let dist_exp' = Distr2 (dist_kind, (t1, eff1, a1), (t2, eff2, a2)) in
+        prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Sample dist_exp')
       )
 
     | DiscreteCase cases ->
@@ -311,10 +329,10 @@ let infer (e : expr) : texpr =
          branch expressions; subtype branches into a fresh result. *)
       let result_ty = Ast.fresh_meta () in
       let typed_cases = List.map (fun (branch, prob) ->
-        let tb, ab = aux env branch in
+        let tb, effb, ab = aux env branch in
         (try sub_type tb result_ty
          with Failure msg -> failwith ("Type error in DiscreteCase branches: " ^ msg));
-        let tp, ap = aux env prob in
+        let tp, effp, ap = aux env prob in
         (* Probability must be a float (concrete or symbolic).
            We don't check sum-to-one when probabilities are
            symbolic. *)
@@ -323,13 +341,13 @@ let infer (e : expr) : texpr =
         let pf_sym = Ast.fresh_sym_bag () in
         (try sub_type tp (TFloat (pf_cuts, pf_floats, pf_sym))
          with Failure msg -> failwith ("Type error in DiscreteCase probability: " ^ msg));
-        ((tb, ab), (tp, ap))
+        ((tb, effb, ab), (tp, effp, ap))
       ) cases in
-      (result_ty, TAExprNode (DiscreteCase typed_cases))
+      prob result_ty (DiscreteCase typed_cases)
 
     | Cmp (cmp_op, e1, e2, flipped) ->
-        let t1, a1 = aux env e1 in
-        let t2, a2 = aux env e2 in
+        let t1, eff1, a1 = aux env e1 in
+        let t2, eff2, a2 = aux env e2 in
         let b_meta = Ast.fresh_cut_bag () in
         let c_meta1 = Lats.fresh_float_bag () in
         let c_meta2 = Lats.fresh_float_bag () in
@@ -441,198 +459,213 @@ let infer (e : expr) : texpr =
         Ast.SymLat.listen s_meta1 listener;
         Ast.SymLat.listen s_meta2 listener;
 
-        (TBool, TAExprNode (Cmp (cmp_op, (t1,a1), (t2,a2), flipped)))
+        mk TBool (join [eff1; eff2])
+          (Cmp (cmp_op, (t1, eff1, a1), (t2, eff2, a2), flipped))
 
     | FinCmp (cmp_op, e1, e2, n, flipped) ->
       if n <= 0 then failwith (Printf.sprintf "Invalid FinCmp modulus: ==#%d. n must be > 0." n);
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
       let expected_type = Ast.TFin n in
       (try sub_type t1 expected_type
        with Failure msg -> failwith (Printf.sprintf "Type error in FinCmp (==#%d) left operand: %s" n msg));
       (try sub_type t2 expected_type
        with Failure msg -> failwith (Printf.sprintf "Type error in FinCmp (==#%d) right operand: %s" n msg));
-      (Ast.TBool, TAExprNode (FinCmp (cmp_op, (t1, a1), (t2, a2), n, flipped)))
+      mk Ast.TBool (join [eff1; eff2])
+        (FinCmp (cmp_op, (t1, eff1, a1), (t2, eff2, a2), n, flipped))
 
     | If (e1, e2, e3) ->
-      let t1, a1 = aux env e1 in
+      let t1, eff1, a1 = aux env e1 in
       (try sub_type t1 Ast.TBool
        with Failure msg -> failwith ("Type error in If condition: " ^ msg));
-      let t2, a2 = aux env e2 in
-      let t3, a3 = aux env e3 in
+      let t2, eff2, a2 = aux env e2 in
+      let t3, eff3, a3 = aux env e3 in
       let result_ty = Ast.fresh_meta () in
       (try
          sub_type t2 result_ty;
          sub_type t3 result_ty
        with Failure msg -> failwith ("Type error in If branches: " ^ msg));
-      (result_ty, TAExprNode (If ((t1,a1), (t2,a2), (t3,a3))))
+      mk result_ty (join [eff1; eff2; eff3])
+        (If ((t1, eff1, a1), (t2, eff2, a2), (t3, eff3, a3)))
 
     | Pair (e1, e2) ->
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
-      (TPair (t1, t2), TAExprNode (Pair ((t1, a1), (t2, a2))))
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
+      mk (TPair (t1, t2)) (join [eff1; eff2])
+        (Pair ((t1, eff1, a1), (t2, eff2, a2)))
 
     | First e1 ->
-      let t, a = aux env e1 in
+      let t, eff, a = aux env e1 in
       let t1_meta = Ast.fresh_meta () in
       let t2_meta = Ast.fresh_meta () in
       (try sub_type t (TPair (t1_meta, t2_meta))
        with Failure msg -> failwith ("Type error in First (fst): " ^ msg));
-      (Ast.force t1_meta, TAExprNode (First (t, a)))
+      mk (Ast.force t1_meta) eff (First (t, eff, a))
 
     | Second e1 ->
-      let t, a = aux env e1 in
+      let t, eff, a = aux env e1 in
       let t1_meta = Ast.fresh_meta () in
       let t2_meta = Ast.fresh_meta () in
       (try sub_type t (TPair (t1_meta, t2_meta))
        with Failure msg -> failwith ("Type error in Second (snd): " ^ msg));
-      (Ast.force t2_meta, TAExprNode (Second (t, a)))
+      mk (Ast.force t2_meta) eff (Second (t, eff, a))
 
     | Fun (x, e1) ->
       let param_type = Ast.fresh_meta () in
       let env' = StringMap.add x param_type env in
-      let return_type, a = aux env' e1 in
-      (Ast.TFun (param_type, return_type), TAExprNode (Fun (x, (return_type, a))))
+      let return_type, return_eff, a = aux env' e1 in
+      pure (Ast.TFun (param_type, return_eff, return_type))
+        (Fun (x, (return_type, return_eff, a)))
 
     | FuncApp (e1, e2) ->
-      let t_fun, a_fun = aux env e1 in
-      let t_arg, a_arg = aux env e2 in
+      let t_fun, eff_fun, a_fun = aux env e1 in
+      let t_arg, eff_arg, a_arg = aux env e2 in
       let param_ty_expected = Ast.fresh_meta () in
       let result_ty = Ast.fresh_meta () in
+      let result_eff = Ast.fresh_effect () in
       (try
-         sub_type t_fun (Ast.TFun (param_ty_expected, result_ty));
+         sub_type t_fun (Ast.TFun (param_ty_expected, result_eff, result_ty));
          sub_type t_arg param_ty_expected
        with Failure msg -> failwith ("Type error in function application: " ^ msg));
-      (result_ty, TAExprNode (FuncApp ((t_fun, a_fun), (t_arg, a_arg))))
+      mk result_ty (join [eff_fun; eff_arg; result_eff])
+        (FuncApp ((t_fun, eff_fun, a_fun), (t_arg, eff_arg, a_arg)))
 
     | LoopApp (e1, e2, e3) ->
-      let t_fun, a_fun = aux env e1 in
-      let t_arg, a_arg = aux env e2 in
+      let t_fun, eff_fun, a_fun = aux env e1 in
+      let t_arg, eff_arg, a_arg = aux env e2 in
       let param_ty_expected = Ast.fresh_meta () in
       let result_ty = Ast.fresh_meta () in
+      let result_eff = Ast.fresh_effect () in
       (try
-          sub_type t_fun (Ast.TFun (param_ty_expected, result_ty));
+          sub_type t_fun (Ast.TFun (param_ty_expected, result_eff, result_ty));
           sub_type t_arg param_ty_expected
         with Failure msg -> failwith ("Type error in loop application: " ^ msg));
-      (result_ty, TAExprNode (LoopApp ((t_fun, a_fun), (t_arg, a_arg), e3)))
+      mk result_ty (join [eff_fun; eff_arg; result_eff])
+        (LoopApp ((t_fun, eff_fun, a_fun), (t_arg, eff_arg, a_arg), e3))
 
     | FinConst (k, n) ->
       if k < 0 || k >= n then failwith (Printf.sprintf "Invalid FinConst value: %d#%d. k must be >= 0 and < n." k n);
-      (Ast.TFin n, TAExprNode (FinConst (k, n)))
+      pure (Ast.TFin n) (FinConst (k, n))
 
     | FinEq (e1, e2, n) ->
       if n <= 0 then failwith (Printf.sprintf "Invalid FinEq modulus: ==#%d. n must be > 0." n);
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
       let expected_type = Ast.TFin n in
       (try sub_type t1 expected_type
        with Failure msg -> failwith (Printf.sprintf "Type error in FinEq (==#%d) left operand: %s" n msg));
       (try sub_type t2 expected_type
        with Failure msg -> failwith (Printf.sprintf "Type error in FinEq (==#%d) right operand: %s" n msg));
-      (Ast.TBool, TAExprNode (FinEq ((t1, a1), (t2, a2), n)))
+      mk Ast.TBool (join [eff1; eff2])
+        (FinEq ((t1, eff1, a1), (t2, eff2, a2), n))
 
     | And (e1, e2) ->
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
       (try sub_type t1 Ast.TBool
        with Failure msg -> failwith ("Type error in And (&&) left operand: " ^ msg));
       (try sub_type t2 Ast.TBool
        with Failure msg -> failwith ("Type error in And (&&) right operand: " ^ msg));
-      (TBool, TAExprNode (And ((t1, a1), (t2, a2))))
+      mk TBool (join [eff1; eff2]) (And ((t1, eff1, a1), (t2, eff2, a2)))
 
     | Or (e1, e2) ->
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
       (try sub_type t1 Ast.TBool
        with Failure msg -> failwith ("Type error in Or (||) left operand: " ^ msg));
       (try sub_type t2 Ast.TBool
        with Failure msg -> failwith ("Type error in Or (||) right operand: " ^ msg));
-      (TBool, TAExprNode (Or ((t1, a1), (t2, a2))))
+      mk TBool (join [eff1; eff2]) (Or ((t1, eff1, a1), (t2, eff2, a2)))
 
     | Not e1 ->
-      let t1, a1 = aux env e1 in
+      let t1, eff1, a1 = aux env e1 in
       (try sub_type t1 Ast.TBool
        with Failure msg -> failwith ("Type error in Not operand: " ^ msg));
-      (TBool, TAExprNode (Not (t1, a1)))
+      mk TBool eff1 (Not (t1, eff1, a1))
 
     | Observe e1 ->
-      let t1, a1 = aux env e1 in
+      let t1, eff1, a1 = aux env e1 in
       (try sub_type t1 TBool
        with Failure msg -> failwith ("Type error in Observe argument: " ^ msg));
-      (TUnit, TAExprNode (Observe (t1, a1)))
+      mk TUnit (join [Prob; eff1]) (Observe (t1, eff1, a1))
 
     | Fix (f, x, e_body) ->
       let fun_type_itself = Ast.fresh_meta () in
       let param_type = Ast.fresh_meta () in
       let env_body = StringMap.add x param_type (StringMap.add f fun_type_itself env) in
       let body_texpr = aux env_body e_body in
-      let body_ret_type = fst body_texpr in
-      let actual_fun_type = Ast.TFun (param_type, body_ret_type) in
+      let body_ret_type = ty_of body_texpr in
+      let body_eff = eff_of body_texpr in
+      let actual_fun_type = Ast.TFun (param_type, body_eff, body_ret_type) in
       unify fun_type_itself actual_fun_type;
-      (fun_type_itself, TAExprNode (Fix (f, x, body_texpr)))
+      pure fun_type_itself (Fix (f, x, body_texpr))
 
     | Nil ->
       let elem_ty = Ast.fresh_meta () in
-      (TList elem_ty, TAExprNode Nil)
+      pure (TList elem_ty) Nil
 
     | Cons (e_hd, e_tl) ->
-      let t_hd, a_hd = aux env e_hd in
-      let t_tl, a_tl = aux env e_tl in
+      let t_hd, eff_hd, a_hd = aux env e_hd in
+      let t_tl, eff_tl, a_tl = aux env e_tl in
       (try unify t_tl (TList t_hd)
        with Failure msg -> failwith ("Type error in list construction (::): " ^ msg));
-      (t_tl, TAExprNode (Cons ((t_hd, a_hd), (t_tl, a_tl))))
+      mk t_tl (join [eff_hd; eff_tl])
+        (Cons ((t_hd, eff_hd, a_hd), (t_tl, eff_tl, a_tl)))
 
     | MatchList (e_match, e_nil, y, ys, e_cons) ->
-      let t_match, a_match = aux env e_match in
+      let t_match, eff_match, a_match = aux env e_match in
       let elem_ty = Ast.fresh_meta () in
       (try unify t_match (TList elem_ty)
        with Failure msg -> failwith ("Type error in match expression (expected list type): " ^ msg));
-      let t_nil, a_nil = aux env e_nil in
+      let t_nil, eff_nil, a_nil = aux env e_nil in
       let env_cons = StringMap.add y elem_ty (StringMap.add ys t_match env) in
-      let t_cons, a_cons = aux env_cons e_cons in
+      let t_cons, eff_cons, a_cons = aux env_cons e_cons in
       let result_ty = Ast.fresh_meta () in
       (try
          sub_type t_nil result_ty;
          sub_type t_cons result_ty
        with Failure msg -> failwith ("Type error in match branches: " ^ msg));
-      (result_ty, TAExprNode (MatchList ((t_match, a_match), (t_nil, a_nil), y, ys, (t_cons, a_cons))))
+      mk result_ty (join [eff_match; eff_nil; eff_cons])
+        (MatchList
+           ((t_match, eff_match, a_match), (t_nil, eff_nil, a_nil), y, ys,
+            (t_cons, eff_cons, a_cons)))
 
     | Ref e1 ->
-      let t1, a1 = aux env e1 in
-      (TRef t1, TAExprNode (Ref (t1, a1)))
+      let t1, eff1, a1 = aux env e1 in
+      mk (TRef t1) eff1 (Ref (t1, eff1, a1))
 
     | Deref e1 ->
-      let t1, a1 = aux env e1 in
+      let t1, eff1, a1 = aux env e1 in
       let val_ty = Ast.fresh_meta () in
       (try unify t1 (TRef val_ty)
        with Failure msg -> failwith ("Type error in dereference (!): " ^ msg));
-      (Ast.force val_ty, TAExprNode (Deref (t1, a1)))
+      mk (Ast.force val_ty) eff1 (Deref (t1, eff1, a1))
 
     | Assign (e1, e2) ->
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
       let val_ty = Ast.fresh_meta () in
       (try
          unify t1 (TRef val_ty);
          sub_type t2 (Ast.force val_ty)
        with Failure msg -> failwith ("Type error in assignment (:=): " ^ msg));
-      (TUnit, TAExprNode (Assign ((t1, a1), (t2, a2))))
+      mk TUnit (join [eff1; eff2]) (Assign ((t1, eff1, a1), (t2, eff2, a2)))
 
     | Seq (e1, e2) ->
-      let t1, a1 = aux env e1 in
-      let t2, a2 = aux env e2 in
-      (t2, TAExprNode (Seq ((t1, a1), (t2, a2))))
+      let t1, eff1, a1 = aux env e1 in
+      let t2, eff2, a2 = aux env e2 in
+      mk t2 (join [eff1; eff2]) (Seq ((t1, eff1, a1), (t2, eff2, a2)))
 
-    | Unit -> (Ast.TUnit, TAExprNode Unit)
+    | Unit -> pure Ast.TUnit Unit
 
-    | RuntimeError s -> (Ast.fresh_meta (), TAExprNode (RuntimeError s))
+    | RuntimeError s -> pure (Ast.fresh_meta ()) (RuntimeError s)
 
   (* Inference for an arithmetic operation; the result's type is a
      fresh symbolic float whose sym-bag identifies the whole
      [orig_expr]. *)
   and arith_aux env orig_expr e1 e2 _op_name rebuild =
-    let t1, a1 = aux env e1 in
-    let t2, a2 = aux env e2 in
+    let t1, eff1, a1 = aux env e1 in
+    let t2, eff2, a2 = aux env e2 in
     (* Both operands must be floats. *)
     let dummy_cut1 = Ast.fresh_cut_bag () in
     let dummy_float1 = Lats.fresh_float_bag () in
@@ -645,12 +678,13 @@ let infer (e : expr) : texpr =
     (try sub_type t2 (TFloat (dummy_cut2, dummy_float2, dummy_sym2))
      with Failure msg -> failwith ("Type error in arithmetic right operand: " ^ msg));
     let result_ty = arith_result_ty orig_expr in
-    (result_ty, TAExprNode (rebuild (t1, a1) (t2, a2)))
+    mk result_ty (join [eff1; eff2])
+      (rebuild (t1, eff1, a1) (t2, eff2, a2))
 
   in
   aux StringMap.empty e
 
 let infer_bool (e : expr) : texpr =
-  let t, a = infer e in
+  let t, eff, a = infer e in
   sub_type t Ast.TBool;
-  (t, a)
+  (t, eff, a)

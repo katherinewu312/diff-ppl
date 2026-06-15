@@ -81,6 +81,18 @@ let rec sum_duals = function
   | [x] -> x
   | x :: xs -> dual_add x (sum_duals xs)
 
+let ty_of (ty, _, _) = ty
+let effect_of (_, eff, _) = Ast.force_effect eff
+let is_prob_effect eff =
+  match Ast.force_effect eff with
+  | Prob -> true
+  | Pure | EMeta _ -> false
+
+let function_returns_prob te =
+  match Ast.force (ty_of te) with
+  | TFun (_, eff, _) -> is_prob_effect eff
+  | _ -> false
+
 let is_float_ty ty =
   match Ast.force ty with
   | TFloat _ -> true
@@ -100,11 +112,11 @@ let rec sample_dual env = function
   | Distr1 (kind, e1) -> Distr1 (kind, det_ad env e1)
   | Distr2 (kind, e1, e2) -> Distr2 (kind, det_ad env e1, det_ad env e2)
 
-and primal env ((ty, _) as te) =
+and primal env ((ty, _, _) as te) =
   if is_float_ty ty then dual_primal (det_ad env te)
   else det_ad env te
 
-and det_ad env (ty, TAExprNode ae) =
+and det_ad env (ty, eff, TAExprNode ae) =
   match ae with
   | Const f -> dual_const f
   | BoolConst b -> bool b
@@ -141,9 +153,23 @@ and det_ad env (ty, TAExprNode ae) =
   | Second e1 -> second (det_ad env e1)
 
   | Fun (x, e1) ->
-      node (Fun (x, det_ad (extend env x) e1))
+      if is_prob_effect (effect_of e1) then
+        let k = Util.fresh_var "_adev_k" in
+        node
+          (Fun
+             ( x
+             , node
+                 (Fun
+                    ( k
+                    , trans (extend env x) e1
+                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+      else
+        node (Fun (x, det_ad (extend env x) e1))
   | FuncApp (e1, e2) ->
-      node (FuncApp (det_ad env e1, det_ad env e2))
+      if is_prob_effect eff then
+        unsupported "probabilistic function application appeared in deterministic AD position"
+      else
+        node (FuncApp (det_ad env e1, det_ad env e2))
   | LoopApp (e1, e2, n) ->
       node (LoopApp (det_ad env e1, det_ad env e2, n))
   | Fix (f, x, e1) ->
@@ -187,7 +213,7 @@ and det_ad env (ty, TAExprNode ae) =
   | DiscreteCase _ ->
       unsupported "discrete distribution appeared in deterministic AD position"
 
-and trans env ((_, TAExprNode ae) as te) k =
+and trans env ((_, _, TAExprNode ae) as te) k =
   match ae with
   | DiscreteCase cases ->
       let terms =
@@ -259,7 +285,13 @@ and trans env ((_, TAExprNode ae) as te) k =
       trans env e1 (fun d1 -> k (second d1))
   | FuncApp (e1, e2) ->
       trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (node (FuncApp (d1, d2)))))
+        trans env e2 (fun d2 ->
+          if function_returns_prob e1 then
+            let x = Util.fresh_var "_adev_arg" in
+            let cont = node (Fun (x, k (node (Var x)))) in
+            node (FuncApp (node (FuncApp (d1, d2)), cont))
+          else
+            k (node (FuncApp (d1, d2)))))
   | LoopApp (e1, e2, n) ->
       trans env e1 (fun d1 ->
         trans env e2 (fun d2 -> k (node (LoopApp (d1, d2, n)))))
@@ -298,7 +330,7 @@ and trans env ((_, TAExprNode ae) as te) k =
 -> simplied AD dual program *)
 
 let dual_expectation_raw ?(param = "theta") te =
-  let ty, _ = te in
+  let ty, _, _ = te in
   trans (empty_env param) te (objective_dual ty)
 
 let gradient_raw ?(param = "theta") te =

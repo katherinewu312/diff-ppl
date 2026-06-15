@@ -1,0 +1,6 @@
+let chooseApply =
+  fun f ->
+    let b = discrete(theta, 1 - theta) in
+    if b <#2 1#2 then f 1.0 else f 2.0
+in
+chooseApply (fun x -> x * theta)

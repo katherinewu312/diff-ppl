@@ -132,13 +132,18 @@ let rec string_of_expr_indented ?(indent=0) e =
   string_of_expr_node ~indent e
 and string_of_aexpr_indented ?(indent=0) ae =
   string_of_aexpr_node ~indent ae
-and string_of_texpr_indented ?(indent=0) ((ty, aexpr) : texpr) : string =
+and string_of_texpr_indented ?(indent=0) ((ty, eff, aexpr) : texpr) : string =
   let aexpr_str = string_of_aexpr_indented ~indent aexpr in
   match aexpr with
   | TAExprNode (FinConst (_, _)) -> aexpr_str
   | _ ->
-      Printf.sprintf "%s(%s%s : %s%s)%s"
-        paren_color reset_color aexpr_str (string_of_ty ty) paren_color reset_color
+      let eff_str =
+        match Ast.force_effect eff with
+        | Pure | EMeta _ -> ""
+        | Prob -> Printf.sprintf " %s!prob%s" type_color reset_color
+      in
+      Printf.sprintf "%s(%s%s : %s%s%s)%s"
+        paren_color reset_color aexpr_str (string_of_ty ty) eff_str paren_color reset_color
 
 and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
   match expr_node with
@@ -514,9 +519,14 @@ and string_of_ty = function
   | TPair (t1, t2) ->
         Printf.sprintf "%s(%s * %s)%s"
           bracket_color (string_of_ty t1) (string_of_ty t2) reset_color
-  | TFun (t1, t2) ->
-        Printf.sprintf "%s(%s -> %s)%s"
-          bracket_color (string_of_ty t1) (string_of_ty t2) reset_color
+  | TFun (t1, eff, t2) ->
+        let arrow =
+          match Ast.force_effect eff with
+          | Pure | EMeta _ -> "->"
+          | Prob -> "~>"
+        in
+        Printf.sprintf "%s(%s %s %s)%s"
+          bracket_color (string_of_ty t1) arrow (string_of_ty t2) reset_color
   | TFin n ->
         Printf.sprintf "%s#%d%s" type_color n reset_color
   | TUnit -> Printf.sprintf "%sunit%s" type_color reset_color

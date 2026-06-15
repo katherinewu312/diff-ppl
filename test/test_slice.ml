@@ -64,6 +64,18 @@ let eval_dual_with_theta theta expr =
       assert_failure
         ("expected dual float pair, got: " ^ Slice.Ast.string_of_value v)
 
+let assert_prob_effect eff =
+  match Slice.Ast.force_effect eff with
+  | Slice.Ast.Prob -> ()
+  | Slice.Ast.Pure | Slice.Ast.EMeta _ ->
+      assert_failure "expected probabilistic effect"
+
+let assert_pure_effect eff =
+  match Slice.Ast.force_effect eff with
+  | Slice.Ast.Pure -> ()
+  | Slice.Ast.Prob | Slice.Ast.EMeta _ ->
+      assert_failure "expected pure effect"
+
 let cdf_point = function
   | Slice.Ast.ExprNode (Slice.Ast.Cdf (_, point))
   | Slice.Ast.ExprNode (Slice.Ast.CdfExpr (_, point)) -> Some point
@@ -293,6 +305,90 @@ let test_adev_dual_simplifies_polynomial_components _ =
         ("expected simplified AD dual to be (1, 0), got: "
          ^ Slice.Pretty.string_of_expr_plain e)
 
+let test_probabilistic_function_effect_inference _ =
+  let texpr =
+    Slice.Inference.infer
+      (Slice.Parse.parse_expr "fun x -> discrete(x, 1 - x)")
+  in
+  match texpr with
+  | Slice.Ast.TFun (_, ret_eff, ret_ty), expr_eff, _ ->
+      assert_pure_effect expr_eff;
+      assert_prob_effect ret_eff;
+      (match Slice.Ast.force ret_ty with
+       | Slice.Ast.TFin 2 -> ()
+       | ty ->
+           assert_failure
+             ("expected probabilistic function to return #2, got: "
+              ^ Slice.Pretty.string_of_ty ty))
+  | ty, _, _ ->
+      assert_failure
+        ("expected probabilistic function type, got: "
+         ^ Slice.Pretty.string_of_ty ty)
+
+let test_adev_probabilistic_function_application _ =
+  let source =
+    "let f = fun x -> discrete(x, 1 - x) in if f theta <#2 1#2 then theta else 0"
+  in
+  let raw_plain =
+    Slice.Pretty.string_of_expr_plain (adev_dual_raw_after_discretize source)
+  in
+  assert_bool "raw probabilistic function should be continuation-passing"
+    (contains_substring raw_plain "_adev_k");
+  let primal, tangent = eval_dual_with_theta 0.3 (adev_dual_after_discretize source) in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.09
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.6
+    tangent
+
+let test_adev_probabilistic_function_application_simplifies_at _ =
+  let source =
+    "let f = fun x -> discrete(x, 1 - x) in if f theta <#2 1#2 then theta else 0"
+  in
+  let _, simplified = adev_dual_after_discretize_at "theta" 0.5 source in
+  match simplified with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Pair
+         (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        0.25
+        primal;
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        1.0
+        tangent
+  | e ->
+      assert_failure
+        ("expected simplified higher-order AD output to be (0.25, 1), got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let test_adev_higher_order_probabilistic_function_application _ =
+  let source =
+    "let apply = fun f -> f theta in \
+     let pf = fun x -> discrete(x, 1 - x) in \
+     if apply pf <#2 1#2 then theta else 0"
+  in
+  let primal, tangent = eval_dual_with_theta 0.3 (adev_dual_after_discretize source) in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.09
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.6
+    tangent
+
 let test_discretize_at_orders_theta_squared_before_theta _ =
   let transformed =
     transform_at "theta" 0.5
@@ -336,6 +432,10 @@ let suite =
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
+  ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference
+  ; "test_adev_probabilistic_function_application" >:: test_adev_probabilistic_function_application
+  ; "test_adev_probabilistic_function_application_simplifies_at" >:: test_adev_probabilistic_function_application_simplifies_at
+  ; "test_adev_higher_order_probabilistic_function_application" >:: test_adev_higher_order_probabilistic_function_application
   ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta
   ; "test_discretize_at_orders_theta_before_theta_plus_one" >:: test_discretize_at_orders_theta_before_theta_plus_one
   ]

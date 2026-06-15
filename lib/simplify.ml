@@ -1,6 +1,7 @@
 open Ast
 
 module StringMap = Map.Make(String)
+module StringSet = Set.Make(String)
 
 (* This is very preliminary so far. It simplies raw AD dual programs, giving the output tuple (expected, derivative).
 So far:
@@ -26,15 +27,21 @@ Simplifies conditionals with known conditions:
 if true then e1 else e2 -> e1
 if false then e1 else e2 -> e2
 
+Normalizes administrative higher-order code:
+let f = fun x -> body in ... -> ...[fun x -> body/f]
+(fun x -> body) v -> body[v/x], for syntactic values v
+
 The separate [algebraic] pass below additionally normalizes polynomial
 float expressions so post-ADEV primal/tangent components can combine
 like terms:
 (theta * theta) + ((1 - theta) * (theta + 1)) -> 1
 
 Inlines very simple let bindings:
+variables
 finite constants
 float constants
 booleans
+functions
 unit/nil
 simple pairs of those
 *)
@@ -128,13 +135,284 @@ let fin_value = function
   | ExprNode (FinConst (k, n)) -> Some (k, n)
   | _ -> None
 
-let inlineable = function
-  | ExprNode (Const _ | BoolConst _ | FinConst _ | Unit | Nil) -> true
-  | ExprNode (Pair (a, b)) ->
-      (match a, b with
-       | ExprNode (Const _ | BoolConst _ | FinConst _ | Unit | Nil),
-         ExprNode (Const _ | BoolConst _ | FinConst _ | Unit | Nil) -> true
-       | _ -> false)
+let union_many sets =
+  List.fold_left StringSet.union StringSet.empty sets
+
+let remove_many_set names set =
+  List.fold_left (fun acc x -> StringSet.remove x acc) set names
+
+let rec vars (ExprNode e) =
+  match e with
+  | Var x -> StringSet.singleton x
+  | Const _ | BoolConst _ | FinConst _ | Nil | Unit | RuntimeError _ ->
+      StringSet.empty
+  | Let (x, e1, e2) -> StringSet.add x (union_many [vars e1; vars e2])
+  | Sample d -> vars_sample d
+  | DiscreteCase cases ->
+      union_many (List.map (fun (b, p) -> StringSet.union (vars b) (vars p)) cases)
+  | Cmp (_, e1, e2, _) | And (e1, e2) | Or (e1, e2)
+  | Pair (e1, e2) | FuncApp (e1, e2) | LoopApp (e1, e2, _)
+  | FinEq (e1, e2, _) ->
+      union_many [vars e1; vars e2]
+  | FinCmp (_, e1, e2, _, _) | Assign (e1, e2) | Seq (e1, e2)
+  | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
+  | CdfExpr (e1, e2) ->
+      union_many [vars e1; vars e2]
+  | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
+      vars e1
+  | If (e1, e2, e3) ->
+      union_many [vars e1; vars e2; vars e3]
+  | Fun (x, e1) -> StringSet.add x (vars e1)
+  | Fix (f, x, e1) -> StringSet.add f (StringSet.add x (vars e1))
+  | Cons (e1, e2) -> union_many [vars e1; vars e2]
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      StringSet.add y (StringSet.add ys (union_many [vars e1; vars e_nil; vars e_cons]))
+  | SpecialFunc (_, args) -> union_many (List.map vars args)
+  | Cdf (d, e1) -> StringSet.union (vars_sample d) (vars e1)
+
+and vars_sample = function
+  | Distr1 (_, e1) -> vars e1
+  | Distr2 (_, e1, e2) -> StringSet.union (vars e1) (vars e2)
+
+let rec free_vars (ExprNode e) =
+  match e with
+  | Var x -> StringSet.singleton x
+  | Const _ | BoolConst _ | FinConst _ | Nil | Unit | RuntimeError _ ->
+      StringSet.empty
+  | Let (x, e1, e2) ->
+      StringSet.union (free_vars e1) (StringSet.remove x (free_vars e2))
+  | Sample d -> free_vars_sample d
+  | DiscreteCase cases ->
+      union_many
+        (List.map
+           (fun (b, p) -> StringSet.union (free_vars b) (free_vars p))
+           cases)
+  | Cmp (_, e1, e2, _) | And (e1, e2) | Or (e1, e2)
+  | Pair (e1, e2) | FuncApp (e1, e2) | LoopApp (e1, e2, _)
+  | FinEq (e1, e2, _) | Assign (e1, e2) | Seq (e1, e2)
+  | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
+  | CdfExpr (e1, e2) ->
+      StringSet.union (free_vars e1) (free_vars e2)
+  | FinCmp (_, e1, e2, _, _) ->
+      StringSet.union (free_vars e1) (free_vars e2)
+  | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
+      free_vars e1
+  | If (e1, e2, e3) ->
+      union_many [free_vars e1; free_vars e2; free_vars e3]
+  | Fun (x, e1) -> StringSet.remove x (free_vars e1)
+  | Fix (f, x, e1) -> remove_many_set [f; x] (free_vars e1)
+  | Cons (e1, e2) -> StringSet.union (free_vars e1) (free_vars e2)
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      union_many
+        [ free_vars e1
+        ; free_vars e_nil
+        ; remove_many_set [y; ys] (free_vars e_cons) ]
+  | SpecialFunc (_, args) -> union_many (List.map free_vars args)
+  | Cdf (d, e1) -> StringSet.union (free_vars_sample d) (free_vars e1)
+
+and free_vars_sample = function
+  | Distr1 (_, e1) -> free_vars e1
+  | Distr2 (_, e1, e2) -> StringSet.union (free_vars e1) (free_vars e2)
+
+let fresh_avoiding base avoid =
+  let rec loop () =
+    let x = Util.fresh_var (base ^ "_") in
+    if StringSet.mem x avoid then loop () else x
+  in
+  loop ()
+
+let rec subst_var name replacement e =
+  subst_var_with name replacement (free_vars replacement) e
+
+and alpha_rename binder body avoid =
+  let binder' = fresh_avoiding binder avoid in
+  (binder', subst_var binder (node (Var binder')) body)
+
+and rename_if_needed binder body target replacement_fv =
+  if StringSet.mem binder replacement_fv then
+    let avoid =
+      union_many
+        [ replacement_fv
+        ; vars body
+        ; StringSet.singleton target ]
+    in
+    alpha_rename binder body avoid
+  else
+    (binder, body)
+
+and subst_var_with name replacement replacement_fv (ExprNode e) =
+  match e with
+  | Var x when x = name -> replacement
+  | Var x -> node (Var x)
+  | Const f -> node (Const f)
+  | BoolConst b -> node (BoolConst b)
+  | Let (x, e1, e2) ->
+      let e1' = subst_var_with name replacement replacement_fv e1 in
+      if x = name then
+        node (Let (x, e1', e2))
+      else
+        let x', e2' = rename_if_needed x e2 name replacement_fv in
+        node (Let (x', e1', subst_var_with name replacement replacement_fv e2'))
+  | Sample d -> node (Sample (subst_sample name replacement replacement_fv d))
+  | DiscreteCase cases ->
+      node
+        (DiscreteCase
+           (List.map
+              (fun (b, p) ->
+                 ( subst_var_with name replacement replacement_fv b
+                 , subst_var_with name replacement replacement_fv p ))
+              cases))
+  | Cmp (op, e1, e2, flipped) ->
+      node
+        (Cmp
+           ( op
+           , subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2
+           , flipped ))
+  | And (e1, e2) ->
+      node
+        (And
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Or (e1, e2) ->
+      node
+        (Or
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Not e1 -> node (Not (subst_var_with name replacement replacement_fv e1))
+  | If (e1, e2, e3) ->
+      node
+        (If
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2
+           , subst_var_with name replacement replacement_fv e3 ))
+  | Pair (e1, e2) ->
+      node
+        (Pair
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | First e1 -> node (First (subst_var_with name replacement replacement_fv e1))
+  | Second e1 -> node (Second (subst_var_with name replacement replacement_fv e1))
+  | Fun (x, e1) ->
+      if x = name then
+        node (Fun (x, e1))
+      else
+        let x', e1' = rename_if_needed x e1 name replacement_fv in
+        node (Fun (x', subst_var_with name replacement replacement_fv e1'))
+  | FuncApp (e1, e2) ->
+      node
+        (FuncApp
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | LoopApp (e1, e2, n) ->
+      node
+        (LoopApp
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2
+           , n ))
+  | FinConst (k, n) -> node (FinConst (k, n))
+  | FinCmp (op, e1, e2, n, flipped) ->
+      node
+        (FinCmp
+           ( op
+           , subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2
+           , n
+           , flipped ))
+  | FinEq (e1, e2, n) ->
+      node
+        (FinEq
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2
+           , n ))
+  | Observe e1 -> node (Observe (subst_var_with name replacement replacement_fv e1))
+  | Fix (f, x, e1) ->
+      if f = name || x = name then
+        node (Fix (f, x, e1))
+      else
+        let f', e1' = rename_if_needed f e1 name replacement_fv in
+        let x', e1'' = rename_if_needed x e1' name replacement_fv in
+        node (Fix (f', x', subst_var_with name replacement replacement_fv e1''))
+  | Nil -> node Nil
+  | Cons (e1, e2) ->
+      node
+        (Cons
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      let e1' = subst_var_with name replacement replacement_fv e1 in
+      let e_nil' = subst_var_with name replacement replacement_fv e_nil in
+      if y = name || ys = name then
+        node (MatchList (e1', e_nil', y, ys, e_cons))
+      else
+        let y', e_cons' = rename_if_needed y e_cons name replacement_fv in
+        let ys', e_cons'' = rename_if_needed ys e_cons' name replacement_fv in
+        node
+          (MatchList
+             ( e1'
+             , e_nil'
+             , y'
+             , ys'
+             , subst_var_with name replacement replacement_fv e_cons'' ))
+  | Ref e1 -> node (Ref (subst_var_with name replacement replacement_fv e1))
+  | Deref e1 -> node (Deref (subst_var_with name replacement replacement_fv e1))
+  | Assign (e1, e2) ->
+      node
+        (Assign
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Seq (e1, e2) ->
+      node
+        (Seq
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Unit -> node Unit
+  | RuntimeError s -> node (RuntimeError s)
+  | Add (e1, e2) ->
+      node
+        (Add
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Sub (e1, e2) ->
+      node
+        (Sub
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Mul (e1, e2) ->
+      node
+        (Mul
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | Div (e1, e2) ->
+      node
+        (Div
+           ( subst_var_with name replacement replacement_fv e1
+           , subst_var_with name replacement replacement_fv e2 ))
+  | SpecialFunc (func, args) ->
+      node (SpecialFunc (func, List.map (subst_var_with name replacement replacement_fv) args))
+  | Cdf (d, e1) ->
+      node
+        (Cdf
+           ( subst_sample name replacement replacement_fv d
+           , subst_var_with name replacement replacement_fv e1 ))
+  | CdfExpr (k, e1) ->
+      node
+        (CdfExpr
+           ( subst_var_with name replacement replacement_fv k
+           , subst_var_with name replacement replacement_fv e1 ))
+
+and subst_sample name replacement replacement_fv = function
+  | Distr1 (kind, e1) ->
+      Distr1 (kind, subst_var_with name replacement replacement_fv e1)
+  | Distr2 (kind, e1, e2) ->
+      Distr2
+        ( kind
+        , subst_var_with name replacement replacement_fv e1
+        , subst_var_with name replacement replacement_fv e2 )
+
+let rec inlineable = function
+  | ExprNode (Var _ | Const _ | BoolConst _ | FinConst _ | Fun _ | Unit | Nil) -> true
+  | ExprNode (Pair (a, b)) -> inlineable a && inlineable b
   | _ -> false
 
 let remove_many names env =
@@ -154,7 +432,7 @@ and expr_env env (ExprNode e) =
   | Let (x, e1, e2) ->
       let e1' = expr_env env e1 in
       if inlineable e1' then
-        expr_env (StringMap.add x e1' env) e2
+        expr_env env (subst_var x e1' e2)
       else
         node (Let (x, e1', expr_env (StringMap.remove x env) e2))
   | Sample d -> node (Sample (sample_env env d))
@@ -215,7 +493,12 @@ and expr_env env (ExprNode e) =
   | Fun (x, e1) ->
       node (Fun (x, expr_env (StringMap.remove x env) e1))
   | FuncApp (e1, e2) ->
-      node (FuncApp (expr_env env e1, expr_env env e2))
+      let e1' = expr_env env e1 in
+      let e2' = expr_env env e2 in
+      (match e1' with
+       | ExprNode (Fun (x, body)) when inlineable e2' ->
+           expr_env env (subst_var x e2' body)
+       | _ -> node (FuncApp (e1', e2')))
   | LoopApp (e1, e2, n) ->
       node (LoopApp (expr_env env e1, expr_env env e2, n))
   | Fix (f, x, e1) ->
@@ -252,70 +535,6 @@ and expr_env env (ExprNode e) =
 and sample_env env = function
   | Distr1 (kind, e1) -> Distr1 (kind, expr_env env e1)
   | Distr2 (kind, e1, e2) -> Distr2 (kind, expr_env env e1, expr_env env e2)
-
-let rec subst_var (name : string) (replacement : expr) (ExprNode e) : expr =
-  match e with
-  | Var x when x = name -> replacement
-  | Var x -> node (Var x)
-  | Const f -> node (Const f)
-  | BoolConst b -> node (BoolConst b)
-  | Let (x, e1, e2) ->
-      let e1' = subst_var name replacement e1 in
-      let e2' = if x = name then e2 else subst_var name replacement e2 in
-      node (Let (x, e1', e2'))
-  | Sample d -> node (Sample (subst_sample name replacement d))
-  | DiscreteCase cases ->
-      node (DiscreteCase (List.map (fun (b, p) -> (subst_var name replacement b, subst_var name replacement p)) cases))
-  | Cmp (op, e1, e2, flipped) ->
-      node (Cmp (op, subst_var name replacement e1, subst_var name replacement e2, flipped))
-  | And (e1, e2) -> node (And (subst_var name replacement e1, subst_var name replacement e2))
-  | Or (e1, e2) -> node (Or (subst_var name replacement e1, subst_var name replacement e2))
-  | Not e1 -> node (Not (subst_var name replacement e1))
-  | If (e1, e2, e3) ->
-      node (If (subst_var name replacement e1, subst_var name replacement e2, subst_var name replacement e3))
-  | Pair (e1, e2) -> node (Pair (subst_var name replacement e1, subst_var name replacement e2))
-  | First e1 -> node (First (subst_var name replacement e1))
-  | Second e1 -> node (Second (subst_var name replacement e1))
-  | Fun (x, e1) ->
-      let e1' = if x = name then e1 else subst_var name replacement e1 in
-      node (Fun (x, e1'))
-  | FuncApp (e1, e2) -> node (FuncApp (subst_var name replacement e1, subst_var name replacement e2))
-  | LoopApp (e1, e2, n) -> node (LoopApp (subst_var name replacement e1, subst_var name replacement e2, n))
-  | FinConst (k, n) -> node (FinConst (k, n))
-  | FinCmp (op, e1, e2, n, flipped) ->
-      node (FinCmp (op, subst_var name replacement e1, subst_var name replacement e2, n, flipped))
-  | FinEq (e1, e2, n) -> node (FinEq (subst_var name replacement e1, subst_var name replacement e2, n))
-  | Observe e1 -> node (Observe (subst_var name replacement e1))
-  | Fix (f, x, e1) ->
-      let e1' =
-        if f = name || x = name then e1 else subst_var name replacement e1
-      in
-      node (Fix (f, x, e1'))
-  | Nil -> node Nil
-  | Cons (e1, e2) -> node (Cons (subst_var name replacement e1, subst_var name replacement e2))
-  | MatchList (e1, e_nil, y, ys, e_cons) ->
-      let e_cons' =
-        if y = name || ys = name then e_cons else subst_var name replacement e_cons
-      in
-      node (MatchList (subst_var name replacement e1, subst_var name replacement e_nil, y, ys, e_cons'))
-  | Ref e1 -> node (Ref (subst_var name replacement e1))
-  | Deref e1 -> node (Deref (subst_var name replacement e1))
-  | Assign (e1, e2) -> node (Assign (subst_var name replacement e1, subst_var name replacement e2))
-  | Seq (e1, e2) -> node (Seq (subst_var name replacement e1, subst_var name replacement e2))
-  | Unit -> node Unit
-  | RuntimeError s -> node (RuntimeError s)
-  | Add (e1, e2) -> node (Add (subst_var name replacement e1, subst_var name replacement e2))
-  | Sub (e1, e2) -> node (Sub (subst_var name replacement e1, subst_var name replacement e2))
-  | Mul (e1, e2) -> node (Mul (subst_var name replacement e1, subst_var name replacement e2))
-  | Div (e1, e2) -> node (Div (subst_var name replacement e1, subst_var name replacement e2))
-  | SpecialFunc (func, args) ->
-      node (SpecialFunc (func, List.map (subst_var name replacement) args))
-  | Cdf (d, e1) -> node (Cdf (subst_sample name replacement d, subst_var name replacement e1))
-  | CdfExpr (k, e1) -> node (CdfExpr (subst_var name replacement k, subst_var name replacement e1))
-
-and subst_sample name replacement = function
-  | Distr1 (kind, e1) -> Distr1 (kind, subst_var name replacement e1)
-  | Distr2 (kind, e1, e2) -> Distr2 (kind, subst_var name replacement e1, subst_var name replacement e2)
 
 (* Walks an AST and replaces free occurrences of a variable, like theta, with a float constant. *)
 let subst_float name value e =
@@ -489,7 +708,7 @@ let algebraic e =
          | ExprNode (Pair (e1, e2)) -> mk_pair (go e1) (go e2)
          | ExprNode (First e1) -> mk_first (go e1)
          | ExprNode (Second e1) -> mk_second (go e1)
-         | ExprNode (Let (x, e1, e2)) -> node (Let (x, go e1, go e2))
+         | ExprNode (Let (x, e1, e2)) -> expr (node (Let (x, go e1, go e2)))
          | ExprNode (If (e1, e2, e3)) -> expr (node (If (go e1, go e2, go e3)))
          | ExprNode (And (e1, e2)) -> expr (node (And (go e1, go e2)))
          | ExprNode (Or (e1, e2)) -> expr (node (Or (go e1, go e2)))
@@ -501,7 +720,7 @@ let algebraic e =
          | ExprNode (FinEq (e1, e2, n)) ->
              expr (node (FinEq (go e1, go e2, n)))
          | ExprNode (Fun (x, e1)) -> node (Fun (x, go e1))
-         | ExprNode (FuncApp (e1, e2)) -> node (FuncApp (go e1, go e2))
+         | ExprNode (FuncApp (e1, e2)) -> expr (node (FuncApp (go e1, go e2)))
          | ExprNode (LoopApp (e1, e2, n)) -> node (LoopApp (go e1, go e2, n))
          | ExprNode (Fix (f, x, e1)) -> node (Fix (f, x, go e1))
          | ExprNode (Observe e1) -> node (Observe (go e1))

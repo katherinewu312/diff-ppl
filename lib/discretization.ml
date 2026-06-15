@@ -18,7 +18,7 @@ let mk_cdf d e = ExprNode (Cdf (d, e))
    surface [expr].  Used when emitting CDF terms: the CDF's
    distribution argument must keep its original (possibly symbolic)
    parameters, not their discretized form. *)
-let rec texpr_to_expr ((_, TAExprNode ae) : texpr) : expr =
+let rec texpr_to_expr ((_, _, TAExprNode ae) : texpr) : expr =
   match ae with
   | Var x -> ExprNode (Var x)
   | Const f -> ExprNode (Const f)
@@ -95,7 +95,7 @@ symbolic expressions of the form [CDF(d, c2) - CDF(d, c1)].
 (* Does a [texpr] (or any sub-expression) contain a [Sample] node?
    Used to detect "sample-flavored" expressions that the
    discretizer must emit as a kernel-CDF discrete distribution. *)
-let rec texpr_contains_sample ((_, TAExprNode ae) : texpr) : bool =
+let rec texpr_contains_sample ((_, _, TAExprNode ae) : texpr) : bool =
   match ae with
   | Sample _ -> true
   | Const _ | Var _ | BoolConst _ | Nil | Unit
@@ -207,8 +207,8 @@ let try_emit_kernel_discrete ?cut_order_at (ty : ty) (kernel_expr : expr) (te : 
 let discretize ?cut_order_at (e : texpr) : expr =
   (* Helper function for comparison operations *)
   let handle_comparison aux op_name te1 te2 cmp_op flipped =
-    let t1 = fst te1 in
-    let t2 = fst te2 in
+    let t1, _, _ = te1 in
+    let t2, _, _ = te2 in
     let b1 = cut_bag_of t1 (op_name ^ " expects float on left operand") in
     let b2 = cut_bag_of t2 (op_name ^ " expects float on right operand") in
     let val1 = CutLat.get b1 in
@@ -227,7 +227,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
     )
   in
 
-  let rec aux ((ty, TAExprNode ae_node) : texpr) : expr =
+  let rec aux ((ty, eff, TAExprNode ae_node) : texpr) : expr =
     match ae_node with
     | Const f ->
         let cuts_bag_ref = cut_bag_of ty "Const expects float" in
@@ -285,7 +285,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
               | Div (te1, te2) -> ExprNode (Div (texpr_to_expr te1, texpr_to_expr te2))
               | _ -> failwith "unreachable"
             in
-            match try_emit_kernel_discrete ?cut_order_at ty kernel_expr (ty, TAExprNode ae_node) with
+            match try_emit_kernel_discrete ?cut_order_at ty kernel_expr (ty, eff, TAExprNode ae_node) with
             | Some e -> e
             | None -> kernel_expr)
     | SpecialFunc (name, args) ->
@@ -327,7 +327,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
              distribution's parameters carries a non-empty
              symbolic bag (e.g. [gaussian(mu, 1) < 0.5]). *)
           let param_has_sym (param_texpr : texpr) : bool =
-            let param_ty, _ = param_texpr in
+            let param_ty, _, _ = param_texpr in
             match Ast.force param_ty with
             | TFloat (_, _, sym_bag) ->
               (match SymLat.get sym_bag with
@@ -415,7 +415,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
             in
 
             let get_possible_floats_from_param (param_texpr : texpr) : float list option =
-              let param_ty, _ = param_texpr in
+              let param_ty, _, _ = param_texpr in
               match Ast.force param_ty with
               | TFloat (_, consts_bag_ref, _) ->
                 (match FloatLat.get consts_bag_ref with
@@ -427,7 +427,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
             in
 
             let get_param_modulus_and_cuts (param_texpr : texpr) : (int * cut list) option =
-              let param_ty, _ = param_texpr in
+              let param_ty, _, _ = param_texpr in
               match Ast.force param_ty with
               | TFloat (b_bag, _, _) ->
                 (match CutLat.get b_bag with
@@ -475,7 +475,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
                       let param_consts_bag_for_f = FloatLat.create (Finite (FloatSet.singleton f_val)) in
                       let param_cuts_bag_for_f = CutLat.create (Finite (CutSet.of_list param_actual_cuts)) in
                       let param_sym_bag_for_f = SymLat.create (Finite SymSet.empty) in
-                      let texpr_const_f_val = (TFloat(param_cuts_bag_for_f, param_consts_bag_for_f, param_sym_bag_for_f), TAExprNode (Const f_val)) in
+                      let texpr_const_f_val = (TFloat(param_cuts_bag_for_f, param_consts_bag_for_f, param_sym_bag_for_f), Pure, TAExprNode (Const f_val)) in
                       let target_finconst_expr = aux texpr_const_f_val in
                       let body = build_body_fn f_val in
                       (target_finconst_expr, body)
@@ -647,6 +647,6 @@ let discretize ?cut_order_at (e : texpr) : expr =
   aux e
 
 let discretize_top ?cut_order_at (e : texpr) : expr =
-  let (return_type, _) = e in
+  let (return_type, _, _) = e in
   Ast.set_cut_bags_to_top return_type;
   discretize ?cut_order_at e

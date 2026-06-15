@@ -202,6 +202,15 @@ let fresh_sym_bag () : SymLat.bag =
 (* Types                                                              *)
 (* ================================================================ *)
 
+type effect =
+  | Pure
+  | Prob
+  | EMeta of effect_meta_ref
+and effect_meta =
+  | EUnknown of (effect -> unit) list
+  | EKnown of effect
+and effect_meta_ref = effect_meta ref
+
 type meta =
   | Unknown of (ty -> unit) list
   | Known of ty
@@ -213,7 +222,7 @@ and ty =
          float bag (concrete constants this expression may take),
          sym bag (symbolic expressions this expression may take). *)
   | TPair of ty * ty
-  | TFun of ty * ty
+  | TFun of ty * effect * ty
   | TFin of int
   | TMeta of meta_ref
   | TUnit
@@ -236,6 +245,64 @@ let listen (m : meta_ref) (f : ty -> unit) : unit =
 
 let fresh_meta () : ty = TMeta (ref (Unknown []))
 
+let rec force_effect = function
+  | EMeta r ->
+      (match !r with
+       | EKnown e -> force_effect e
+       | EUnknown _ -> EMeta r)
+  | e -> e
+
+let listen_effect (m : effect_meta_ref) (f : effect -> unit) : unit =
+  match !m with
+  | EKnown e -> f e
+  | EUnknown fs -> m := EUnknown (f :: fs)
+
+let fresh_effect () : effect =
+  EMeta (ref (EUnknown []))
+
+let assign_effect (m : effect_meta_ref) (e : effect) : unit =
+  match !m with
+  | EKnown _ -> ()
+  | EUnknown fs -> m := EKnown e; List.iter (fun f -> f e) fs
+
+let rec effect_leq (e_sub : effect) (e_super : effect) : unit =
+  match force_effect e_sub, force_effect e_super with
+  | Pure, _ -> ()
+  | Prob, Prob -> ()
+  | Prob, Pure -> failwith "effect mismatch: probabilistic computation used where pure computation was expected"
+  | Prob, EMeta r -> assign_effect r Prob
+  | EMeta r, Pure ->
+      listen_effect r (fun e -> effect_leq e Pure)
+  | EMeta _, Prob -> ()
+  | EMeta r1, EMeta r2 ->
+      listen_effect r1 (fun e -> effect_leq e (EMeta r2));
+      listen_effect r2 (fun e -> effect_leq (EMeta r1) e)
+
+let join_effect e1 e2 =
+  match force_effect e1, force_effect e2 with
+  | Prob, _ | _, Prob -> Prob
+  | Pure, Pure -> Pure
+  | EMeta r, e | e, EMeta r ->
+      let out = fresh_effect () in
+      let update () =
+        match force_effect (EMeta r), force_effect e with
+        | Prob, _ | _, Prob ->
+            (match force_effect out with
+             | EMeta out_r -> assign_effect out_r Prob
+             | _ -> ())
+        | _ -> ()
+      in
+      listen_effect r (fun _ -> update ());
+      (match force_effect e with
+       | EMeta er -> listen_effect er (fun _ -> update ())
+       | _ -> ());
+      update ();
+      out
+
+let join_effects = function
+  | [] -> Pure
+  | e :: es -> List.fold_left join_effect e es
+
 let assign (m : meta_ref) (t : ty) : unit =
   match !m with
   | Known _ -> failwith "Cannot assign to a known type"
@@ -249,7 +316,7 @@ let rec set_cut_bags_to_top (t : ty) : unit =
   | TPair (t1, t2) ->
       set_cut_bags_to_top t1;
       set_cut_bags_to_top t2
-  | TFun (t1, t2) ->
+  | TFun (t1, _, t2) ->
       set_cut_bags_to_top t1;
       set_cut_bags_to_top t2
   | TList t' ->
@@ -261,7 +328,7 @@ let rec set_cut_bags_to_top (t : ty) : unit =
   | TBool | TFin _ | TUnit ->
       ()
 
-type texpr = ty * aexpr
+type texpr = ty * effect * aexpr
 and aexpr = TAExprNode of texpr expr_generic
 
 type value =
