@@ -31,6 +31,10 @@ Normalizes administrative higher-order code:
 let f = fun x -> body in ... -> ...[fun x -> body/f]
 (fun x -> body) v -> body[v/x], for syntactic values v
 
+Reduces list pattern matches with known constructors:
+match nil with ... -> nil branch
+match h :: t with ... -> cons branch with h/t substituted
+
 The separate [algebraic] pass below additionally normalizes polynomial
 float expressions so post-ADEV primal/tangent components can combine
 like terms:
@@ -151,7 +155,7 @@ let rec vars (ExprNode e) =
   | DiscreteCase cases ->
       union_many (List.map (fun (b, p) -> StringSet.union (vars b) (vars p)) cases)
   | Cmp (_, e1, e2, _) | And (e1, e2) | Or (e1, e2)
-  | Pair (e1, e2) | FuncApp (e1, e2) | LoopApp (e1, e2, _)
+  | Pair (e1, e2) | FuncApp (e1, e2)
   | FinEq (e1, e2, _) ->
       union_many [vars e1; vars e2]
   | FinCmp (_, e1, e2, _, _) | Assign (e1, e2) | Seq (e1, e2)
@@ -188,7 +192,7 @@ let rec free_vars (ExprNode e) =
            (fun (b, p) -> StringSet.union (free_vars b) (free_vars p))
            cases)
   | Cmp (_, e1, e2, _) | And (e1, e2) | Or (e1, e2)
-  | Pair (e1, e2) | FuncApp (e1, e2) | LoopApp (e1, e2, _)
+  | Pair (e1, e2) | FuncApp (e1, e2)
   | FinEq (e1, e2, _) | Assign (e1, e2) | Seq (e1, e2)
   | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
   | CdfExpr (e1, e2) ->
@@ -220,6 +224,10 @@ let fresh_avoiding base avoid =
     if StringSet.mem x avoid then loop () else x
   in
   loop ()
+
+let fresh_var_expr base avoid =
+  let x = fresh_avoiding base avoid in
+  (x, node (Var x))
 
 let rec subst_var name replacement e =
   subst_var_with name replacement (free_vars replacement) e
@@ -304,12 +312,6 @@ and subst_var_with name replacement replacement_fv (ExprNode e) =
         (FuncApp
            ( subst_var_with name replacement replacement_fv e1
            , subst_var_with name replacement replacement_fv e2 ))
-  | LoopApp (e1, e2, n) ->
-      node
-        (LoopApp
-           ( subst_var_with name replacement replacement_fv e1
-           , subst_var_with name replacement replacement_fv e2
-           , n ))
   | FinConst (k, n) -> node (FinConst (k, n))
   | FinCmp (op, e1, e2, n, flipped) ->
       node
@@ -410,9 +412,24 @@ and subst_sample name replacement replacement_fv = function
         , subst_var_with name replacement replacement_fv e1
         , subst_var_with name replacement replacement_fv e2 )
 
+let subst_two name1 replacement1 name2 replacement2 e =
+  let avoid =
+    union_many [vars e; vars replacement1; vars replacement2]
+  in
+  let tmp1, tmp1_expr = fresh_var_expr name1 avoid in
+  let tmp2, tmp2_expr =
+    fresh_var_expr name2 (StringSet.add tmp1 avoid)
+  in
+  e
+  |> subst_var name1 tmp1_expr
+  |> subst_var name2 tmp2_expr
+  |> subst_var tmp1 replacement1
+  |> subst_var tmp2 replacement2
+
 let rec inlineable = function
-  | ExprNode (Var _ | Const _ | BoolConst _ | FinConst _ | Fun _ | Unit | Nil) -> true
+  | ExprNode (Var _ | Const _ | BoolConst _ | FinConst _ | Fun _ | Fix _ | Unit | Nil) -> true
   | ExprNode (Pair (a, b)) -> inlineable a && inlineable b
+  | ExprNode (Cons (a, b)) -> inlineable a && inlineable b
   | _ -> false
 
 let remove_many names env =
@@ -498,9 +515,20 @@ and expr_env env (ExprNode e) =
       (match e1' with
        | ExprNode (Fun (x, body)) when inlineable e2' ->
            expr_env env (subst_var x e2' body)
+       | ExprNode (Fix (f, x, body)) when inlineable e2' ->
+           (* One-step beta-reduction of a recursive application:
+              substitute the recursive name with the whole [fix]
+              term and the formal with the argument.  Recursive
+              calls inside [body] become FuncApp(Fix(...), ...) and
+              are only reduced on demand at the next application
+              site, so this terminates. *)
+           let body' =
+             body
+             |> subst_var f e1'
+             |> subst_var x e2'
+           in
+           expr_env env body'
        | _ -> node (FuncApp (e1', e2')))
-  | LoopApp (e1, e2, n) ->
-      node (LoopApp (expr_env env e1, expr_env env e2, n))
   | Fix (f, x, e1) ->
       node (Fix (f, x, expr_env (remove_many [f; x] env) e1))
   | FinConst (k, n) -> node (FinConst (k, n))
@@ -508,12 +536,19 @@ and expr_env env (ExprNode e) =
   | Nil -> node Nil
   | Cons (e1, e2) -> node (Cons (expr_env env e1, expr_env env e2))
   | MatchList (e1, e_nil, y, ys, e_cons) ->
-      node (MatchList
-        ( expr_env env e1
-        , expr_env env e_nil
-        , y
-        , ys
-        , expr_env (remove_many [y; ys] env) e_cons ))
+      let e1' = expr_env env e1 in
+      (match e1' with
+       | ExprNode Nil -> expr_env env e_nil
+       | ExprNode (Cons (hd, tl)) ->
+           let branch = subst_two y hd ys tl e_cons in
+           expr_env env branch
+       | _ ->
+           node (MatchList
+             ( e1'
+             , expr_env env e_nil
+             , y
+             , ys
+             , expr_env (remove_many [y; ys] env) e_cons )))
   | Ref e1 -> node (Ref (expr_env env e1))
   | Deref e1 -> node (Deref (expr_env env e1))
   | Assign (e1, e2) -> node (Assign (expr_env env e1, expr_env env e2))
@@ -721,12 +756,11 @@ let algebraic e =
              expr (node (FinEq (go e1, go e2, n)))
          | ExprNode (Fun (x, e1)) -> node (Fun (x, go e1))
          | ExprNode (FuncApp (e1, e2)) -> expr (node (FuncApp (go e1, go e2)))
-         | ExprNode (LoopApp (e1, e2, n)) -> node (LoopApp (go e1, go e2, n))
-         | ExprNode (Fix (f, x, e1)) -> node (Fix (f, x, go e1))
+         | ExprNode (Fix (f, x, e1)) -> expr (node (Fix (f, x, go e1)))
          | ExprNode (Observe e1) -> node (Observe (go e1))
          | ExprNode (Cons (e1, e2)) -> node (Cons (go e1, go e2))
          | ExprNode (MatchList (e1, e_nil, y, ys, e_cons)) ->
-             node (MatchList (go e1, go e_nil, y, ys, go e_cons))
+             expr (node (MatchList (go e1, go e_nil, y, ys, go e_cons)))
          | ExprNode (Ref e1) -> node (Ref (go e1))
          | ExprNode (Deref e1) -> node (Deref (go e1))
          | ExprNode (Assign (e1, e2)) -> node (Assign (go e1, go e2))

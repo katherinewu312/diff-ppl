@@ -10,7 +10,7 @@
      Dexpect[discrete(p_i : v_i)] k
        = sum_i D[p_i] *D Dexpect[v_i] k
 
-   This is the n-ary analogue of ADEV's flip_enum rule. *)
+   This is the n-ary analog of ADEV's flip_enum rule. *)
 
 open Ast
 
@@ -170,10 +170,21 @@ and det_ad env (ty, eff, TAExprNode ae) =
         unsupported "probabilistic function application appeared in deterministic AD position"
       else
         node (FuncApp (det_ad env e1, det_ad env e2))
-  | LoopApp (e1, e2, n) ->
-      node (LoopApp (det_ad env e1, det_ad env e2, n))
   | Fix (f, x, e1) ->
-      node (Fix (f, x, det_ad (extend (extend env f) x) e1))
+      let env' = extend (extend env f) x in
+      if is_prob_effect (effect_of e1) then
+        let k = Util.fresh_var "_adev_k" in
+        node
+          (Fix
+             ( f
+             , x
+             , node
+                 (Fun
+                    ( k
+                    , trans env' e1
+                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+      else
+        node (Fix (f, x, det_ad env' e1))
 
   | FinConst (k, n) -> node (FinConst (k, n))
   | Observe e1 -> node (Observe (det_ad env e1))
@@ -292,10 +303,6 @@ and trans env ((_, _, TAExprNode ae) as te) k =
             node (FuncApp (node (FuncApp (d1, d2)), cont))
           else
             k (node (FuncApp (d1, d2)))))
-  | LoopApp (e1, e2, n) ->
-      trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (node (LoopApp (d1, d2, n)))))
-
   | Cons (e1, e2) ->
       trans env e1 (fun d1 ->
         trans env e2 (fun d2 -> k (node (Cons (d1, d2)))))

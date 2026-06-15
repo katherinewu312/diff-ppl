@@ -95,7 +95,6 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | Second e1 -> Printf.sprintf "(snd %s)" (string_of_expr_plain e1)
   | Fun (x, e1) -> Printf.sprintf "fun %s -> %s" x (string_of_expr_plain e1)
   | FuncApp (e1, e2) -> Printf.sprintf "(%s %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
-  | LoopApp (e1, e2, n) -> Printf.sprintf "iterate(%s, %s, %d)" (string_of_expr_plain e1) (string_of_expr_plain e2) n
   | Fix (f, x, e1) -> Printf.sprintf "fix %s %s := %s" f x (string_of_expr_plain e1)
   | FinConst (k, n) -> Printf.sprintf "%d#%d" k n
   | FinEq (e1, e2, n) -> Printf.sprintf "(%s ==#%d %s)" (string_of_expr_plain e1) n (string_of_expr_plain e2)
@@ -233,10 +232,6 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
       let e1_str = string_of_expr_indented ~indent e1 in
       let e2_str = string_of_expr_indented ~indent e2 in
       Printf.sprintf "(%s %s)" e1_str e2_str
-  | LoopApp (e1, e2, n) ->
-      let e1_str = string_of_expr_indented ~indent e1 in
-      let e2_str = string_of_expr_indented ~indent e2 in
-      Printf.sprintf "iterate(%s,%s,%d)" e1_str e2_str n
   | Fix (f, x, e) ->
       let e_str = string_of_expr_indented ~indent:(indent+2) e in
       Printf.sprintf "%sfix%s %s%s%s %s%s%s %s:=%s %s"
@@ -398,10 +393,6 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
       let e1_str = string_of_texpr_indented ~indent te1 in
       let e2_str = string_of_texpr_indented ~indent te2 in
       Printf.sprintf "(%s %s)" e1_str e2_str
-  | LoopApp (te1, te2, n) ->
-      let e1_str = string_of_texpr_indented ~indent te1 in
-      let e2_str = string_of_texpr_indented ~indent te2 in
-      Printf.sprintf "(%s %s %d)" e1_str e2_str n
   | Fix (f, x, te) ->
       let te_str = string_of_texpr_indented ~indent:(indent+2) te in
       Printf.sprintf "%sfix%s %s%s%s %s%s%s %s:=%s %s"

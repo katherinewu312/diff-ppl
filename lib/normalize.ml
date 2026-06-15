@@ -1,4 +1,4 @@
-(* Pre-pass that normalises affine comparisons.
+(* Pre-pass that normalizes affine comparisons.
 
    Whenever a [Cmp] has the form [a*x + b op rhs] (where [x] is a
    sub-expression containing a [Sample] and [a], [b] are pure
@@ -7,16 +7,16 @@
      x op' (rhs - b) / a
 
    with the operator flipped when [a < 0].  Only the LHS is
-   normalised; the RHS is left untouched.
+   normalized; the RHS is left untouched.
 
-   Affine extraction recognises Add/Sub/Mul/Div whose other operand
+   Affine extraction recognizes Add/Sub/Mul/Div whose other operand
    is a pure numeric literal.  Anything else (e.g. symbolic
    variables, samples on both sides, or sample in a denominator)
    causes the rewrite to bail out and the original [Cmp] is kept. *)
 
 open Ast
 
-(* Recognise a sub-expression that evaluates to a numeric constant
+(* Recognize a sub-expression that evaluates to a numeric constant
    (literal or arithmetic over literals).  Returns [None] for
    anything that depends on a variable or a sample. *)
 let rec try_eval_const (ExprNode e : expr) : float option =
@@ -50,7 +50,7 @@ module StringSet = Set.Make(String)
 (* Does the expression contain a [Sample] node anywhere, OR a
    reference to a variable that is known to hold a sample-flavored
    value?  The default empty environment ignores variable bindings,
-   matching the previous behaviour. *)
+   matching the previous behavior. *)
 let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
   match e with
   | Sample _ -> true
@@ -64,7 +64,7 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
   | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
   | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _) | FinEq (e1, e2, _)
   | And (e1, e2) | Or (e1, e2) | Pair (e1, e2) | FuncApp (e1, e2)
-  | LoopApp (e1, e2, _) | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
+  | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
       contains_sample_env env e1 || contains_sample_env env e2
   | Not e1 | First e1 | Second e1 | Observe e1
   | Ref e1 | Deref e1 -> contains_sample_env env e1
@@ -187,7 +187,7 @@ and recompose_no_offset (a : float) (k : expr) : expr =
 
 (* Rewrite [Cmp (op, lhs, rhs, flipped)] when [lhs] is affine in a
    sample.  Returns the new comparison expression. *)
-let normalise_cmp (env : StringSet.t) (op : cmp_op) (lhs : expr) (rhs : expr) (flipped : bool) : expr =
+let normalize_cmp (env : StringSet.t) (op : cmp_op) (lhs : expr) (rhs : expr) (flipped : bool) : expr =
   match affine_of env lhs with
   | None -> ExprNode (Cmp (op, lhs, rhs, flipped))
   | Some (a, x, b) when a = 1.0 && b = 0.0 ->
@@ -219,64 +219,63 @@ let normalise_cmp (env : StringSet.t) (op : cmp_op) (lhs : expr) (rhs : expr) (f
    known to be bound to sample-flavored expressions.  Crossing a
    [Let x = e1] grows the environment with [x] iff [e1] is
    sample-flavored. *)
-let rec normalise_env (env : StringSet.t) (e : expr) : expr =
+let rec normalize_env (env : StringSet.t) (e : expr) : expr =
   let ExprNode node = e in
   match node with
   | Cmp (op, e1, e2, flipped) ->
-      let e1' = normalise_env env e1 in
-      let e2' = normalise_env env e2 in
-      normalise_cmp env op e1' e2' flipped
+      let e1' = normalize_env env e1 in
+      let e2' = normalize_env env e2 in
+      normalize_cmp env op e1' e2' flipped
   | Const _ | Var _ | BoolConst _ | Nil | Unit
   | FinConst _ | RuntimeError _ -> e
   | Let (x, e1, e2) ->
-      let e1' = normalise_env env e1 in
+      let e1' = normalize_env env e1 in
       let env' =
         if contains_sample_env env e1' then StringSet.add x env else env
       in
-      ExprNode (Let (x, e1', normalise_env env' e2))
-  | Sample (Distr1 (k, e1)) -> ExprNode (Sample (Distr1 (k, normalise_env env e1)))
-  | Sample (Distr2 (k, e1, e2)) -> ExprNode (Sample (Distr2 (k, normalise_env env e1, normalise_env env e2)))
+      ExprNode (Let (x, e1', normalize_env env' e2))
+  | Sample (Distr1 (k, e1)) -> ExprNode (Sample (Distr1 (k, normalize_env env e1)))
+  | Sample (Distr2 (k, e1, e2)) -> ExprNode (Sample (Distr2 (k, normalize_env env e1, normalize_env env e2)))
   | DiscreteCase cases ->
-      ExprNode (DiscreteCase (List.map (fun (b, p) -> (normalise_env env b, normalise_env env p)) cases))
+      ExprNode (DiscreteCase (List.map (fun (b, p) -> (normalize_env env b, normalize_env env p)) cases))
   | FinCmp (op, e1, e2, n, flipped) ->
-      ExprNode (FinCmp (op, normalise_env env e1, normalise_env env e2, n, flipped))
-  | FinEq (e1, e2, n) -> ExprNode (FinEq (normalise_env env e1, normalise_env env e2, n))
-  | And (e1, e2) -> ExprNode (And (normalise_env env e1, normalise_env env e2))
-  | Or (e1, e2) -> ExprNode (Or (normalise_env env e1, normalise_env env e2))
-  | Not e1 -> ExprNode (Not (normalise_env env e1))
-  | If (e1, e2, e3) -> ExprNode (If (normalise_env env e1, normalise_env env e2, normalise_env env e3))
-  | Pair (e1, e2) -> ExprNode (Pair (normalise_env env e1, normalise_env env e2))
-  | First e1 -> ExprNode (First (normalise_env env e1))
-  | Second e1 -> ExprNode (Second (normalise_env env e1))
+      ExprNode (FinCmp (op, normalize_env env e1, normalize_env env e2, n, flipped))
+  | FinEq (e1, e2, n) -> ExprNode (FinEq (normalize_env env e1, normalize_env env e2, n))
+  | And (e1, e2) -> ExprNode (And (normalize_env env e1, normalize_env env e2))
+  | Or (e1, e2) -> ExprNode (Or (normalize_env env e1, normalize_env env e2))
+  | Not e1 -> ExprNode (Not (normalize_env env e1))
+  | If (e1, e2, e3) -> ExprNode (If (normalize_env env e1, normalize_env env e2, normalize_env env e3))
+  | Pair (e1, e2) -> ExprNode (Pair (normalize_env env e1, normalize_env env e2))
+  | First e1 -> ExprNode (First (normalize_env env e1))
+  | Second e1 -> ExprNode (Second (normalize_env env e1))
   | Fun (x, e1) ->
       (* Inside a [fun] we don't know whether the parameter will be
          bound to a sample-flavored value, so drop it from the env
          to be safe. *)
       let env' = StringSet.remove x env in
-      ExprNode (Fun (x, normalise_env env' e1))
-  | FuncApp (e1, e2) -> ExprNode (FuncApp (normalise_env env e1, normalise_env env e2))
-  | LoopApp (e1, e2, n) -> ExprNode (LoopApp (normalise_env env e1, normalise_env env e2, n))
-  | Observe e1 -> ExprNode (Observe (normalise_env env e1))
+      ExprNode (Fun (x, normalize_env env' e1))
+  | FuncApp (e1, e2) -> ExprNode (FuncApp (normalize_env env e1, normalize_env env e2))
+  | Observe e1 -> ExprNode (Observe (normalize_env env e1))
   | Fix (f, x, e1) ->
       let env' = StringSet.remove f (StringSet.remove x env) in
-      ExprNode (Fix (f, x, normalise_env env' e1))
-  | Cons (e1, e2) -> ExprNode (Cons (normalise_env env e1, normalise_env env e2))
+      ExprNode (Fix (f, x, normalize_env env' e1))
+  | Cons (e1, e2) -> ExprNode (Cons (normalize_env env e1, normalize_env env e2))
   | MatchList (e1, en, y, ys, ec) ->
       let env' = StringSet.remove y (StringSet.remove ys env) in
-      ExprNode (MatchList (normalise_env env e1, normalise_env env en, y, ys, normalise_env env' ec))
-  | Ref e1 -> ExprNode (Ref (normalise_env env e1))
-  | Deref e1 -> ExprNode (Deref (normalise_env env e1))
-  | Assign (e1, e2) -> ExprNode (Assign (normalise_env env e1, normalise_env env e2))
-  | Seq (e1, e2) -> ExprNode (Seq (normalise_env env e1, normalise_env env e2))
-  | Add (e1, e2) -> ExprNode (Add (normalise_env env e1, normalise_env env e2))
-  | Sub (e1, e2) -> ExprNode (Sub (normalise_env env e1, normalise_env env e2))
-  | Mul (e1, e2) -> ExprNode (Mul (normalise_env env e1, normalise_env env e2))
-  | Div (e1, e2) -> ExprNode (Div (normalise_env env e1, normalise_env env e2))
+      ExprNode (MatchList (normalize_env env e1, normalize_env env en, y, ys, normalize_env env' ec))
+  | Ref e1 -> ExprNode (Ref (normalize_env env e1))
+  | Deref e1 -> ExprNode (Deref (normalize_env env e1))
+  | Assign (e1, e2) -> ExprNode (Assign (normalize_env env e1, normalize_env env e2))
+  | Seq (e1, e2) -> ExprNode (Seq (normalize_env env e1, normalize_env env e2))
+  | Add (e1, e2) -> ExprNode (Add (normalize_env env e1, normalize_env env e2))
+  | Sub (e1, e2) -> ExprNode (Sub (normalize_env env e1, normalize_env env e2))
+  | Mul (e1, e2) -> ExprNode (Mul (normalize_env env e1, normalize_env env e2))
+  | Div (e1, e2) -> ExprNode (Div (normalize_env env e1, normalize_env env e2))
   | SpecialFunc (name, args) ->
-      ExprNode (SpecialFunc (name, List.map (normalise_env env) args))
-  | Cdf (Distr1 (k, e1), e2) -> ExprNode (Cdf (Distr1 (k, normalise_env env e1), normalise_env env e2))
-  | Cdf (Distr2 (k, e1, e2), e3) -> ExprNode (Cdf (Distr2 (k, normalise_env env e1, normalise_env env e2), normalise_env env e3))
-  | CdfExpr (k, e1) -> ExprNode (CdfExpr (normalise_env env k, normalise_env env e1))
+      ExprNode (SpecialFunc (name, List.map (normalize_env env) args))
+  | Cdf (Distr1 (k, e1), e2) -> ExprNode (Cdf (Distr1 (k, normalize_env env e1), normalize_env env e2))
+  | Cdf (Distr2 (k, e1, e2), e3) -> ExprNode (Cdf (Distr2 (k, normalize_env env e1, normalize_env env e2), normalize_env env e3))
+  | CdfExpr (k, e1) -> ExprNode (CdfExpr (normalize_env env k, normalize_env env e1))
 
-let normalise (e : expr) : expr =
-  normalise_env StringSet.empty e
+let normalize (e : expr) : expr =
+  normalize_env StringSet.empty e

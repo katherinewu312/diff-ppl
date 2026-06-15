@@ -530,19 +530,6 @@ let infer (e : expr) : texpr =
       mk result_ty (join [eff_fun; eff_arg; result_eff])
         (FuncApp ((t_fun, eff_fun, a_fun), (t_arg, eff_arg, a_arg)))
 
-    | LoopApp (e1, e2, e3) ->
-      let t_fun, eff_fun, a_fun = aux env e1 in
-      let t_arg, eff_arg, a_arg = aux env e2 in
-      let param_ty_expected = Ast.fresh_meta () in
-      let result_ty = Ast.fresh_meta () in
-      let result_eff = Ast.fresh_effect () in
-      (try
-          sub_type t_fun (Ast.TFun (param_ty_expected, result_eff, result_ty));
-          sub_type t_arg param_ty_expected
-        with Failure msg -> failwith ("Type error in loop application: " ^ msg));
-      mk result_ty (join [eff_fun; eff_arg; result_eff])
-        (LoopApp ((t_fun, eff_fun, a_fun), (t_arg, eff_arg, a_arg), e3))
-
     | FinConst (k, n) ->
       if k < 0 || k >= n then failwith (Printf.sprintf "Invalid FinConst value: %d#%d. k must be >= 0 and < n." k n);
       pure (Ast.TFin n) (FinConst (k, n))

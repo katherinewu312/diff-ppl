@@ -76,6 +76,27 @@ let assert_pure_effect eff =
   | Slice.Ast.Prob | Slice.Ast.EMeta _ ->
       assert_failure "expected pure effect"
 
+let assert_const_dual expected_primal expected_tangent expr =
+  match expr with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Pair
+         (Slice.Ast.ExprNode (Slice.Ast.Const primal),
+          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        expected_primal
+        primal;
+      assert_equal
+        ~printer:string_of_float
+        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+        expected_tangent
+        tangent
+  | e ->
+      assert_failure
+        ("expected constant dual pair, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
 let cdf_point = function
   | Slice.Ast.ExprNode (Slice.Ast.Cdf (_, point))
   | Slice.Ast.ExprNode (Slice.Ast.CdfExpr (_, point)) -> Some point
@@ -389,6 +410,59 @@ let test_adev_higher_order_probabilistic_function_application _ =
     0.6
     tangent
 
+let test_adev_probabilistic_fix_loop_application _ =
+  let source =
+    "let choose = fix choose x := discrete(x, 1 - x) in \
+     if choose theta <#2 1#2 then theta else 0"
+  in
+  let raw_plain =
+    Slice.Pretty.string_of_expr_plain (adev_dual_raw_after_discretize source)
+  in
+  assert_bool "raw probabilistic fix should be continuation-passing"
+    (contains_substring raw_plain "_adev_k");
+  let primal, tangent = eval_dual_with_theta 0.3 (adev_dual_after_discretize source) in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.09
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.6
+    tangent
+
+let test_adev_probabilistic_fix_loop_application_simplifies_at _ =
+  let source =
+    "let choose = fix choose x := discrete(x, 1 - x) in \
+     if choose theta <#2 1#2 then theta else 0"
+  in
+  let _, simplified = adev_dual_after_discretize_at "theta" 0.5 source in
+  assert_const_dual 0.25 1.0 simplified
+
+let test_adev_list_match_simplifies_at _ =
+  let source =
+    "match theta :: nil with \
+     | nil -> 0 \
+     | x :: xs -> x * x \
+     end"
+  in
+  let _, simplified = adev_dual_after_discretize_at "theta" 0.5 source in
+  assert_const_dual 0.25 1.0 simplified
+
+let test_adev_recursive_list_sum_simplifies_at _ =
+  let source =
+    "let sum = fix sum xs := \
+       match xs with \
+       | nil -> 0 \
+       | y :: ys -> y + sum ys \
+       end \
+     in \
+     sum (theta :: ((theta + 1) :: nil))"
+  in
+  let _, simplified = adev_dual_after_discretize_at "theta" 0.5 source in
+  assert_const_dual 2.0 2.0 simplified
+
 let test_discretize_at_orders_theta_squared_before_theta _ =
   let transformed =
     transform_at "theta" 0.5
@@ -436,6 +510,10 @@ let suite =
   ; "test_adev_probabilistic_function_application" >:: test_adev_probabilistic_function_application
   ; "test_adev_probabilistic_function_application_simplifies_at" >:: test_adev_probabilistic_function_application_simplifies_at
   ; "test_adev_higher_order_probabilistic_function_application" >:: test_adev_higher_order_probabilistic_function_application
+  ; "test_adev_probabilistic_fix_loop_application" >:: test_adev_probabilistic_fix_loop_application
+  ; "test_adev_probabilistic_fix_loop_application_simplifies_at" >:: test_adev_probabilistic_fix_loop_application_simplifies_at
+  ; "test_adev_list_match_simplifies_at" >:: test_adev_list_match_simplifies_at
+  ; "test_adev_recursive_list_sum_simplifies_at" >:: test_adev_recursive_list_sum_simplifies_at
   ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta
   ; "test_discretize_at_orders_theta_before_theta_plus_one" >:: test_discretize_at_orders_theta_before_theta_plus_one
   ]

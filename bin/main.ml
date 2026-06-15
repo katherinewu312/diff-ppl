@@ -55,7 +55,7 @@ let apply_eval_point_simplified at e =
 let run ~print_all ~mode ~at filename =
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
-  let normalized = Slice.Normalize.normalise expr in
+  let normalized = Slice.Normalize.normalize expr in
   let texpr = Slice.Inference.infer normalized in
   let cut_order_at : Slice.Cut_order.at option =
     match at with

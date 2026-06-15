@@ -39,7 +39,6 @@ let rec texpr_to_expr ((_, _, TAExprNode ae) : texpr) : expr =
   | Second e1 -> ExprNode (Second (texpr_to_expr e1))
   | Fun (x, e1) -> ExprNode (Fun (x, texpr_to_expr e1))
   | FuncApp (e1, e2) -> ExprNode (FuncApp (texpr_to_expr e1, texpr_to_expr e2))
-  | LoopApp (e1, e2, n) -> ExprNode (LoopApp (texpr_to_expr e1, texpr_to_expr e2, n))
   | FinConst (k, n) -> ExprNode (FinConst (k, n))
   | Observe e1 -> ExprNode (Observe (texpr_to_expr e1))
   | Fix (f, x, e1) -> ExprNode (Fix (f, x, texpr_to_expr e1))
@@ -104,7 +103,7 @@ let rec texpr_contains_sample ((_, _, TAExprNode ae) : texpr) : bool =
   | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
   | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _) | FinEq (e1, e2, _)
   | And (e1, e2) | Or (e1, e2) | Pair (e1, e2) | FuncApp (e1, e2)
-  | LoopApp (e1, e2, _) | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
+  | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
       texpr_contains_sample e1 || texpr_contains_sample e2
   | Not e1 | First e1 | Second e1 | Observe e1
   | Ref e1 | Deref e1 -> texpr_contains_sample e1
@@ -599,9 +598,6 @@ let discretize ?cut_order_at (e : texpr) : expr =
 
     | FuncApp (te1, te2) ->
         ExprNode (FuncApp (aux te1, aux te2))
-
-    | LoopApp (te1, te2, te3) ->
-        ExprNode (LoopApp (aux te1, aux te2, te3))
 
     | FinConst (k, n) ->
         ExprNode (FinConst (k, n))

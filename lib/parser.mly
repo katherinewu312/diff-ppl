@@ -59,7 +59,6 @@ open Ast
 %token EXPPOW
 %token POISSON
 %token BINOMIAL
-%token ITERATE
 
 %start <Ast.expr> prog
 
@@ -177,7 +176,6 @@ prefix_expr:                  (* New level for prefix ops like ! and ref *)
 /* Application Level */
 app_expr:
   | app_expr atomic_expr                                                        { ExprNode (FuncApp ($1, $2)) }
-  | ITERATE LPAREN e1 = app_expr COMMA e2 = atomic_expr COMMA n = INT RPAREN    { ExprNode (LoopApp (e1, e2, n)) }
   | FST atomic_expr                                                             { ExprNode (First $2) }
   | SND atomic_expr                                                             { ExprNode (Second $2) }
   | atomic_expr                                                                 { $1 }        /* Fallthrough to atomic_expr */

@@ -1,5 +1,7 @@
 _build/
 *.install
+.DS_Store
+.vscode/
 
 # LaTeX build artifacts
 tex/

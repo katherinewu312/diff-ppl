@@ -23,7 +23,6 @@ type 'a expr_generic =
   | Second of 'a
   | Fun    of string * 'a
   | FuncApp    of 'a * 'a
-  | LoopApp    of 'a * 'a * int           (* Loop application: e1 e2 int *)
   | FinConst of int * int
   | FinCmp of cmp_op * 'a * 'a * int * bool
   | FinEq of 'a * 'a * int

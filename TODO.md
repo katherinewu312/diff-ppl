@@ -1,1 +1,3 @@
 - Add support for lists, refs, assignment, sequencing, match, fix, loops
+- Investigate LoopApp vs FuncApp and if one can be eliminated
+- Support for soemthing like uniform(0,1)*uniform(0,1) < theta
