@@ -1,2 +1,5 @@
 _build/
 *.install
+
+# LaTeX build artifacts
+tex/
