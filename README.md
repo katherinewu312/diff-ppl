@@ -79,6 +79,7 @@ dune exec diff_ppl -- --print-all FILE.slice
 dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
 dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
+dune exec diff_ppl -- --ad-dual theta=0.5 dtheta=1 alpha=0.2 dalpha=1 FILE.slice
 ```
 
 Supports:
@@ -90,6 +91,7 @@ Supports:
 * `--ad-dual` for simplified dual output
 * `--print-all --ad-dual` for raw + simplified dual output
 * `--at PARAM=VALUE` for concrete evaluation for AD modes
+* `PARAM=VALUE` and `dPARAM=SEED` for seeding
 
 `--ad` prints the ADEV-style tangent program for the discretized program.
 `--ad-dual` prints the full dual program as `(primal, tangent)`.
@@ -103,6 +105,12 @@ AD modes also accept `--at PARAM=VALUE` or `--at=PARAM=VALUE`. This uses
 program, and then simplifies the simplified AD program again at that concrete
 point. Without `--at`, AD output is unchanged and still differentiates with
 respect to `theta`.
+
+AD modes can also accept bare assignments before the input file. `PARAM=VALUE`
+substitutes a concrete value, and `dPARAM=SEED` sets the forward-mode tangent
+seed for `PARAM`. If any explicit `dPARAM=SEED` assignments are provided, those
+seeds replace the default `dtheta=1`; otherwise the old default behavior is
+unchanged.
 
 ## Project Layout
 

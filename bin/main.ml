@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--ad | --ad-dual] [--at PARAM=VALUE] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -26,66 +26,101 @@ type ad_output =
   ; simplified : Slice.Ast.expr
   }
 
-type eval_point =
-  { param : string
+type assignment =
+  { name : string
   ; value : float
   }
 
-let parse_eval_point spec =
+type ad_args =
+  { values : assignment list
+  ; seeds : Slice.Adev.seeds option
+  ; cut_order_at : Slice.Cut_order.at option
+  }
+
+let parse_assignment spec =
   try
     let idx = String.index spec '=' in
-    let param = String.sub spec 0 idx in
+    let name = String.sub spec 0 idx in
     let value_text = String.sub spec (idx + 1) (String.length spec - idx - 1) in
-    if param = "" || value_text = "" then usage ();
-    { param; value = float_of_string value_text }
+    if name = "" || value_text = "" then usage ();
+    { name; value = float_of_string value_text }
   with
   | Not_found | Failure _ -> usage ()
 
-let apply_eval_point_raw at e =
-  match at with
-  | None -> e
-  | Some { param; value } -> Slice.Simplify.subst_float param value e
+let is_seed_name name =
+  String.length name > 1 && String.get name 0 = 'd'
 
-let apply_eval_point_simplified at e =
-  match at with
-  | None -> e
-  | Some { param; value } ->
-      Slice.Simplify.algebraic (Slice.Simplify.subst_float param value e)
+let seed_var_name name =
+  String.sub name 1 (String.length name - 1)
 
-let run ~print_all ~mode ~at filename =
+let parse_ad_args assignments =
+  let values, seed_values =
+    List.fold_left
+      (fun (values, seed_values) assignment ->
+         if is_seed_name assignment.name then
+           (values, assignment :: seed_values)
+         else
+           (assignment :: values, seed_values))
+      ([], [])
+      assignments
+  in
+  let values = List.rev values in
+  let seed_values = List.rev seed_values in
+  let seeds =
+    match seed_values, values with
+    | [], [] -> None
+    | [], { name; _ } :: _ -> Some (Slice.Adev.seeds_of_param name)
+    | _ ->
+        Some
+          (List.fold_left
+             (fun acc { name; value } ->
+                Slice.Adev.add_seed (seed_var_name name) value acc)
+             Slice.Adev.no_seeds
+             seed_values)
+  in
+  let cut_order_at =
+    match values with
+    | { name; value } :: _ -> Some { Slice.Cut_order.param = name; value }
+    | [] -> None
+  in
+  { values; seeds; cut_order_at }
+
+let apply_values_raw values e =
+  List.fold_left
+    (fun acc { name; value } -> Slice.Simplify.subst_float name value acc)
+    e
+    values
+
+let apply_values_simplified values e =
+  Slice.Simplify.algebraic (apply_values_raw values e)
+
+let run ~print_all ~mode ~assignments filename =
+  let ad_args = parse_ad_args assignments in
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
   let normalized = Slice.Normalize.normalize expr in
   let texpr = Slice.Inference.infer normalized in
-  let cut_order_at : Slice.Cut_order.at option =
-    match at with
-    | None -> None
-    | Some { param; value } -> Some { Slice.Cut_order.param = param; value }
-  in
+  let cut_order_at = ad_args.cut_order_at in
+  let seeds = ad_args.seeds in
   let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
-  let ad_param =
-    match at with
-    | Some { param; _ } -> param
-    | None -> "theta"
-  in
   let ad_output =
     match mode with
     | Discretize -> None
     | AdGradient ->
         let discretized_texpr = Slice.Inference.infer transformed in
-        let raw = Slice.Adev.gradient_raw ~param:ad_param discretized_texpr in
-        let simplified = Slice.Adev.gradient ~param:ad_param discretized_texpr in
+        let raw = Slice.Adev.gradient_raw ?seeds discretized_texpr in
+        let simplified = Slice.Adev.gradient ?seeds discretized_texpr in
         Some
-          { raw = apply_eval_point_raw at raw
-          ; simplified = apply_eval_point_simplified at simplified
+          { raw = apply_values_raw ad_args.values raw
+          ; simplified = apply_values_simplified ad_args.values simplified
           }
     | AdDual ->
         let discretized_texpr = Slice.Inference.infer transformed in
-        let raw = Slice.Adev.dual_expectation_raw ~param:ad_param discretized_texpr in
-        let simplified = Slice.Adev.dual_expectation ~param:ad_param discretized_texpr in
+        let raw = Slice.Adev.dual_expectation_raw ?seeds discretized_texpr in
+        let simplified = Slice.Adev.dual_expectation ?seeds discretized_texpr in
         Some
-          { raw = apply_eval_point_raw at raw
-          ; simplified = apply_eval_point_simplified at simplified
+          { raw = apply_values_raw ad_args.values raw
+          ; simplified = apply_values_simplified ad_args.values simplified
           }
   in
   let output_expr =
@@ -114,30 +149,30 @@ let run ~print_all ~mode ~at filename =
     print_endline output_source
 
 let () =
-  let rec parse_args print_all mode at filename = function
+  let rec parse_args print_all mode assignments filename = function
     | [] ->
         (match filename with
-         | Some f -> run ~print_all ~mode ~at f
+         | Some f -> run ~print_all ~mode ~assignments:(List.rev assignments) f
          | None -> usage ())
     | "--print-all" :: rest ->
-        parse_args true mode at filename rest
+        parse_args true mode assignments filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdGradient at filename rest
+        parse_args print_all AdGradient assignments filename rest
     | "--ad-dual" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdDual at filename rest
+        parse_args print_all AdDual assignments filename rest
     | "--at" :: spec :: rest ->
-        if at <> None then usage ();
-        parse_args print_all mode (Some (parse_eval_point spec)) filename rest
+        parse_args print_all mode (parse_assignment spec :: assignments) filename rest
     | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
-        if at <> None then usage ();
         let spec = String.sub arg 5 (String.length arg - 5) in
-        parse_args print_all mode (Some (parse_eval_point spec)) filename rest
+        parse_args print_all mode (parse_assignment spec :: assignments) filename rest
+    | arg :: rest when String.contains arg '=' ->
+        parse_args print_all mode (parse_assignment arg :: assignments) filename rest
     | arg :: rest ->
         if filename <> None then usage ();
-        parse_args print_all mode at (Some arg) rest
+        parse_args print_all mode assignments (Some arg) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: args -> parse_args false Discretize None None args
+  | _ :: args -> parse_args false Discretize [] None args
   | [] -> usage ()

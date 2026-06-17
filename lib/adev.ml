@@ -15,15 +15,27 @@
 open Ast
 
 module StringSet = Set.Make(String)
+module StringMap = Map.Make(String)
+
+type seeds = float StringMap.t
 
 type env =
-  { param : string
+  { seeds : seeds
   ; bound : StringSet.t
   }
 
-let empty_env param = { param; bound = StringSet.empty }
+let default_param = "theta" (* FIX? *)
+let no_seeds = StringMap.empty
+let add_seed = StringMap.add
+let default_seeds = StringMap.singleton default_param 1.0
+let seeds_of_param param = StringMap.singleton param 1.0
+let empty_env seeds = { seeds; bound = StringSet.empty }
 let extend env x = { env with bound = StringSet.add x env.bound }
 let is_bound env x = StringSet.mem x env.bound
+let seed_of env x =
+  match StringMap.find_opt x env.seeds with
+  | Some seed -> seed
+  | None -> 0.0
 
 let node e = ExprNode e
 let const = Simplify.mk_const
@@ -123,7 +135,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Var x ->
       if is_float_ty ty then
         if is_bound env x then node (Var x)
-        else dual_seed x (if x = env.param then 1.0 else 0.0)
+        else dual_seed x (seed_of env x)
       else
         node (Var x)
 
@@ -336,15 +348,21 @@ and trans env ((_, _, TAExprNode ae) as te) k =
 -> Simplify.expr raw_program
 -> simplied AD dual program *)
 
-let dual_expectation_raw ?(param = "theta") te =
+let dual_expectation_raw ?param ?seeds te =
+  let seeds =
+    match seeds, param with
+    | Some seeds, _ -> seeds
+    | None, Some param -> seeds_of_param param
+    | None, None -> default_seeds
+  in
   let ty, _, _ = te in
-  trans (empty_env param) te (objective_dual ty)
+  trans (empty_env seeds) te (objective_dual ty)
 
-let gradient_raw ?(param = "theta") te =
-  dual_tangent (dual_expectation_raw ~param te)
+let gradient_raw ?param ?seeds te =
+  dual_tangent (dual_expectation_raw ?param ?seeds te)
 
-let dual_expectation ?(param = "theta") te =
-  Simplify.algebraic (dual_expectation_raw ~param te)
+let dual_expectation ?param ?seeds te =
+  Simplify.algebraic (dual_expectation_raw ?param ?seeds te)
 
-let gradient ?(param = "theta") te =
-  Simplify.algebraic (gradient_raw ~param te)
+let gradient ?param ?seeds te =
+  Simplify.algebraic (gradient_raw ?param ?seeds te)

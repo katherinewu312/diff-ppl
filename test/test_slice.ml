@@ -41,6 +41,17 @@ let adev_gradient_after_discretize source =
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.gradient texpr
 
+let adev_dual_with_seeds seeds source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Adev.dual_expectation ~seeds texpr
+
+let seeds assignments =
+  List.fold_left
+    (fun acc (name, value) -> Slice.Adev.add_seed name value acc)
+    Slice.Adev.no_seeds
+    assignments
+
 let contains_substring s needle =
   let len = String.length s in
   let n = String.length needle in
@@ -58,6 +69,14 @@ let eval_float_with_theta theta expr =
 
 let eval_dual_with_theta theta expr =
   match Slice.Interp.eval [("theta", Slice.Ast.VFloat theta)] expr with
+  | Slice.Ast.VPair (Slice.Ast.VFloat primal, Slice.Ast.VFloat tangent) ->
+      (primal, tangent)
+  | v ->
+      assert_failure
+        ("expected dual float pair, got: " ^ Slice.Ast.string_of_value v)
+
+let eval_dual_with_env env expr =
+  match Slice.Interp.eval env expr with
   | Slice.Ast.VPair (Slice.Ast.VFloat primal, Slice.Ast.VFloat tangent) ->
       (primal, tangent)
   | v ->
@@ -296,6 +315,54 @@ let test_adev_dual_at_can_use_non_theta_parameter _ =
         ("expected non-theta AD-at output to be a constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain simplified)
 
+let test_adev_explicit_seed_for_non_theta_variable _ =
+  let dual =
+    adev_dual_with_seeds
+      (seeds ["alpha", 1.0])
+      "alpha * alpha + theta"
+  in
+  let primal, tangent =
+    eval_dual_with_env
+      [ "alpha", Slice.Ast.VFloat 0.4
+      ; "theta", Slice.Ast.VFloat 0.3
+      ]
+      dual
+  in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.46
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.8
+    tangent
+
+let test_adev_multiple_explicit_unit_seeds _ =
+  let dual =
+    adev_dual_with_seeds
+      (seeds ["theta", 1.0; "alpha", 1.0])
+      "theta * alpha"
+  in
+  let primal, tangent =
+    eval_dual_with_env
+      [ "theta", Slice.Ast.VFloat 0.3
+      ; "alpha", Slice.Ast.VFloat 0.4
+      ]
+      dual
+  in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.12
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.7
+    tangent
+
 let test_adev_dual_simplifies_polynomial_components _ =
   let source =
     "if discrete(theta, 1 - theta) <#2 1#2 then theta else theta + 1"
@@ -505,6 +572,8 @@ let suite =
   ; "test_adev_beta_cdf_dual_simplifies_at" >:: test_adev_beta_cdf_dual_simplifies_at
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
+  ; "test_adev_explicit_seed_for_non_theta_variable" >:: test_adev_explicit_seed_for_non_theta_variable
+  ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference
   ; "test_adev_probabilistic_function_application" >:: test_adev_probabilistic_function_application
