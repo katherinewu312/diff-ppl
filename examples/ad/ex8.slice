@@ -1,0 +1,2 @@
+let choose = fix choose x := discrete(x, 1 - x) in
+if choose theta <#2 1#2 then theta else 0
