@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--forward | --reverse] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -20,6 +20,10 @@ type mode =
   | Discretize
   | AdGradient
   | AdDual
+
+type ad_mode =
+  | Forward
+  | Reverse
 
 type ad_output =
   { raw : Slice.Ast.expr
@@ -96,7 +100,7 @@ let apply_values_raw values e =
 let apply_values_simplified values e =
   Slice.Simplify.algebraic (apply_values_raw values e)
 
-let run ~print_all ~mode ~assignments filename =
+let run ~print_all ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
@@ -110,16 +114,30 @@ let run ~print_all ~mode ~assignments filename =
     | Discretize -> None
     | AdGradient ->
         let discretized_texpr = Slice.Inference.infer transformed in
-        let raw = Slice.Adev.gradient_raw ?seeds discretized_texpr in
-        let simplified = Slice.Adev.gradient ?seeds discretized_texpr in
+        let raw, simplified =
+          match ad_mode with
+          | Forward ->
+              ( Slice.Adev.gradient_raw ?seeds discretized_texpr
+              , Slice.Adev.gradient ?seeds discretized_texpr )
+          | Reverse ->
+              ( Slice.Reverse.gradient_raw ?seeds discretized_texpr
+              , Slice.Reverse.gradient ?seeds discretized_texpr )
+        in
         Some
           { raw = apply_values_raw ad_args.values raw
           ; simplified = apply_values_simplified ad_args.values simplified
           }
     | AdDual ->
         let discretized_texpr = Slice.Inference.infer transformed in
-        let raw = Slice.Adev.dual_expectation_raw ?seeds discretized_texpr in
-        let simplified = Slice.Adev.dual_expectation ?seeds discretized_texpr in
+        let raw, simplified =
+          match ad_mode with
+          | Forward ->
+              ( Slice.Adev.dual_expectation_raw ?seeds discretized_texpr
+              , Slice.Adev.dual_expectation ?seeds discretized_texpr )
+          | Reverse ->
+              ( Slice.Reverse.dual_expectation_raw ?seeds discretized_texpr
+              , Slice.Reverse.dual_expectation ?seeds discretized_texpr )
+        in
         Some
           { raw = apply_values_raw ad_args.values raw
           ; simplified = apply_values_simplified ad_args.values simplified
@@ -139,46 +157,55 @@ let run ~print_all ~mode ~assignments filename =
     (match ad_output with
      | None -> ()
      | Some { raw; simplified } ->
-         let raw_title, simplified_title =
-           match mode with
-           | Discretize -> "Raw output program", "Output program"
-           | AdGradient -> "Raw ADEV gradient program", "Simplified ADEV gradient program"
-           | AdDual -> "Raw ADEV dual program", "Simplified ADEV dual program"
-         in
+          let ad_name =
+            match ad_mode with
+            | Forward -> "forward"
+            | Reverse -> "reverse"
+          in
+          let raw_title, simplified_title =
+            match mode with
+            | Discretize -> "Raw output program", "Output program"
+            | AdGradient -> "Raw " ^ ad_name ^ " AD gradient program", "Simplified " ^ ad_name ^ " AD gradient program"
+            | AdDual -> "Raw " ^ ad_name ^ " AD dual program", "Simplified " ^ ad_name ^ " AD dual program"
+          in
          print_section raw_title (Slice.Pretty.string_of_expr raw);
          print_section simplified_title (Slice.Pretty.string_of_expr simplified)))
   else
     print_endline output_source
 
 let () =
-  let rec parse_args print_all mode assignments filename = function
+  let rec parse_args print_all mode ad_mode assignments filename = function
     | [] ->
         (match filename with
          | Some f ->
-             (try run ~print_all ~mode ~assignments:(List.rev assignments) f with
+             (try run ~print_all ~mode ~ad_mode ~assignments:(List.rev assignments) f with
               | Failure msg ->
                   prerr_endline msg;
                   exit 1)
          | None -> usage ())
     | "--print-all" :: rest ->
-        parse_args true mode assignments filename rest
+        parse_args true mode ad_mode assignments filename rest
+    | "--forward" :: rest ->
+        parse_args print_all mode Forward assignments filename rest
+    | "--reverse" :: rest ->
+        parse_args print_all mode Reverse assignments filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdGradient assignments filename rest
+        parse_args print_all AdGradient ad_mode assignments filename rest
     | "--ad-dual" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdDual assignments filename rest
+        parse_args print_all AdDual ad_mode assignments filename rest
     | "--at" :: spec :: rest ->
-        parse_args print_all mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
         let spec = String.sub arg 5 (String.length arg - 5) in
-        parse_args print_all mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.contains arg '=' ->
-        parse_args print_all mode (parse_assignment arg :: assignments) filename rest
+        parse_args print_all mode ad_mode (parse_assignment arg :: assignments) filename rest
     | arg :: rest ->
         if filename <> None then usage ();
-        parse_args print_all mode assignments (Some arg) rest
+        parse_args print_all mode ad_mode assignments (Some arg) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: args -> parse_args false Discretize [] None args
+  | _ :: args -> parse_args false Discretize Forward [] None args
   | [] -> usage ()

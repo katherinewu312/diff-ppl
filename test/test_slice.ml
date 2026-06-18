@@ -384,6 +384,32 @@ let test_adev_explicit_seed_for_non_theta_variable _ =
     0.8
     tangent
 
+let test_reverse_multiple_explicit_unit_seeds _ =
+  let expr = Slice.Parse.parse_expr "theta * alpha" in
+  let texpr = Slice.Inference.infer expr in
+  let dual =
+    Slice.Reverse.dual_expectation
+      ~seeds:(seeds ["theta", 1.0; "alpha", 1.0])
+      texpr
+  in
+  let primal, tangent =
+    eval_dual_with_env
+      [ "theta", Slice.Ast.VFloat 0.3
+      ; "alpha", Slice.Ast.VFloat 0.4
+      ]
+      dual
+  in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.12
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.7
+    tangent
+
 let test_adev_multiple_explicit_unit_seeds _ =
   let dual =
     adev_dual_with_seeds
@@ -621,6 +647,7 @@ let suite =
   ; "test_adev_requires_seed_for_multiple_free_float_variables" >:: test_adev_requires_seed_for_multiple_free_float_variables
   ; "test_adev_allows_one_seed_for_multiple_free_float_variables" >:: test_adev_allows_one_seed_for_multiple_free_float_variables
   ; "test_adev_explicit_seed_for_non_theta_variable" >:: test_adev_explicit_seed_for_non_theta_variable
+  ; "test_reverse_multiple_explicit_unit_seeds" >:: test_reverse_multiple_explicit_unit_seeds
   ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference

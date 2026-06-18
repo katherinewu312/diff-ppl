@@ -80,6 +80,7 @@ dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
 dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
 dune exec diff_ppl -- --ad-dual theta=0.5 dtheta=1 alpha=0.2 dalpha=1 FILE.slice
+dune exec diff_ppl -- --reverse --ad-dual theta=0.5 dtheta=1 alpha=0.2 dalpha=1 FILE.slice
 ```
 
 Supports:
@@ -90,6 +91,7 @@ Supports:
 * `--print-all --ad` for raw + simplified gradient output
 * `--ad-dual` for simplified dual output
 * `--print-all --ad-dual` for raw + simplified dual output
+* `--forward` or `--reverse` to choose AD mode; forward is the default if no flag is specified
 * `--at PARAM=VALUE` for concrete evaluation for AD modes
 * `PARAM=VALUE` and `dPARAM=SEED` for seeding
 
@@ -106,11 +108,11 @@ program, and then simplifies the simplified AD program again at that concrete
 point.
 
 AD modes can also accept bare assignments before the input file. `PARAM=VALUE`
-substitutes a concrete value, and `dPARAM=SEED` sets the forward-mode tangent
-seed for `PARAM`. If explicit `dPARAM=SEED` assignments are provided, unspecified
-variables get seed `0`. If no explicit seeds are provided, a program with exactly
-one free float variable seeds that variable with `1`; a program with multiple
-free float variables requires an explicit seed.
+substitutes a concrete value, and `dPARAM=SEED` sets the AD seed for `PARAM`.
+If explicit `dPARAM=SEED` assignments are provided, unspecified variables get
+seed `0`. If no explicit seeds are provided, a program with exactly one free
+float variable seeds that variable with `1`; a program with multiple free float
+variables requires an explicit seed.
 
 ## Project Layout
 
