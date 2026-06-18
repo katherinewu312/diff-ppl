@@ -29,6 +29,7 @@ type ad_output =
 type assignment =
   { name : string
   ; value : float
+  ; is_at : bool
   }
 
 type ad_args =
@@ -37,13 +38,13 @@ type ad_args =
   ; cut_order_at : Slice.Cut_order.at option
   }
 
-let parse_assignment spec =
+let parse_assignment ?(is_at = false) spec =
   try
     let idx = String.index spec '=' in
     let name = String.sub spec 0 idx in
     let value_text = String.sub spec (idx + 1) (String.length spec - idx - 1) in
     if name = "" || value_text = "" then usage ();
-    { name; value = float_of_string value_text }
+    { name; value = float_of_string value_text; is_at }
   with
   | Not_found | Failure _ -> usage ()
 
@@ -66,28 +67,29 @@ let parse_ad_args assignments =
   in
   let values = List.rev values in
   let seed_values = List.rev seed_values in
+  let at_values = List.filter (fun assignment -> assignment.is_at) values in
   let seeds =
-    match seed_values, values with
+    match seed_values, at_values with
     | [], [] -> None
     | [], { name; _ } :: _ -> Some (Slice.Adev.seeds_of_param name)
     | _ ->
         Some
           (List.fold_left
-             (fun acc { name; value } ->
+             (fun acc { name; value; _ } ->
                 Slice.Adev.add_seed (seed_var_name name) value acc)
              Slice.Adev.no_seeds
              seed_values)
   in
   let cut_order_at =
     match values with
-    | { name; value } :: _ -> Some { Slice.Cut_order.param = name; value }
+    | { name; value; _ } :: _ -> Some { Slice.Cut_order.param = name; value }
     | [] -> None
   in
   { values; seeds; cut_order_at }
 
 let apply_values_raw values e =
   List.fold_left
-    (fun acc { name; value } -> Slice.Simplify.subst_float name value acc)
+    (fun acc { name; value; _ } -> Slice.Simplify.subst_float name value acc)
     e
     values
 
@@ -152,7 +154,11 @@ let () =
   let rec parse_args print_all mode assignments filename = function
     | [] ->
         (match filename with
-         | Some f -> run ~print_all ~mode ~assignments:(List.rev assignments) f
+         | Some f ->
+             (try run ~print_all ~mode ~assignments:(List.rev assignments) f with
+              | Failure msg ->
+                  prerr_endline msg;
+                  exit 1)
          | None -> usage ())
     | "--print-all" :: rest ->
         parse_args true mode assignments filename rest
@@ -163,10 +169,10 @@ let () =
         if mode <> Discretize then usage ();
         parse_args print_all AdDual assignments filename rest
     | "--at" :: spec :: rest ->
-        parse_args print_all mode (parse_assignment spec :: assignments) filename rest
+        parse_args print_all mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
         let spec = String.sub arg 5 (String.length arg - 5) in
-        parse_args print_all mode (parse_assignment spec :: assignments) filename rest
+        parse_args print_all mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.contains arg '=' ->
         parse_args print_all mode (parse_assignment arg :: assignments) filename rest
     | arg :: rest ->

@@ -315,6 +315,51 @@ let test_adev_dual_at_can_use_non_theta_parameter _ =
         ("expected non-theta AD-at output to be a constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain simplified)
 
+let test_adev_infers_single_non_theta_seed _ =
+  let expr = Slice.Parse.parse_expr "foo * foo" in
+  let texpr = Slice.Inference.infer expr in
+  let dual = Slice.Adev.dual_expectation texpr in
+  let primal, tangent = eval_dual_with_env ["foo", Slice.Ast.VFloat 0.4] dual in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.16
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.8
+    tangent
+
+let test_adev_requires_seed_for_multiple_free_float_variables _ =
+  let expr = Slice.Parse.parse_expr "foo + bar" in
+  let texpr = Slice.Inference.infer expr in
+  assert_raises
+    (Failure "ADEV: multiple free float variables found (bar, foo); please specify at least one dVARIABLE seed, e.g. dbar=1")
+    (fun () -> ignore (Slice.Adev.dual_expectation texpr))
+
+let test_adev_allows_one_seed_for_multiple_free_float_variables _ =
+  let expr = Slice.Parse.parse_expr "foo + bar" in
+  let texpr = Slice.Inference.infer expr in
+  let dual = Slice.Adev.dual_expectation ~seeds:(seeds ["foo", 1.0]) texpr in
+  let primal, tangent =
+    eval_dual_with_env
+      [ "foo", Slice.Ast.VFloat 0.4
+      ; "bar", Slice.Ast.VFloat 0.3
+      ]
+      dual
+  in
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    0.7
+    primal;
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+    1.0
+    tangent
+
 let test_adev_explicit_seed_for_non_theta_variable _ =
   let dual =
     adev_dual_with_seeds
@@ -572,6 +617,9 @@ let suite =
   ; "test_adev_beta_cdf_dual_simplifies_at" >:: test_adev_beta_cdf_dual_simplifies_at
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
+  ; "test_adev_infers_single_non_theta_seed" >:: test_adev_infers_single_non_theta_seed
+  ; "test_adev_requires_seed_for_multiple_free_float_variables" >:: test_adev_requires_seed_for_multiple_free_float_variables
+  ; "test_adev_allows_one_seed_for_multiple_free_float_variables" >:: test_adev_allows_one_seed_for_multiple_free_float_variables
   ; "test_adev_explicit_seed_for_non_theta_variable" >:: test_adev_explicit_seed_for_non_theta_variable
   ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components

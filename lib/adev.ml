@@ -20,14 +20,12 @@ module StringMap = Map.Make(String)
 type seeds = float StringMap.t
 
 type env =
-  { seeds : seeds
-  ; bound : StringSet.t
+  { seeds : seeds (* free parameters to differentiate with respect to *)
+  ; bound : StringSet.t (* local program variables that should not be treated as seed parameters *)
   }
 
-let default_param = "theta" (* FIX? *)
 let no_seeds = StringMap.empty
 let add_seed = StringMap.add
-let default_seeds = StringMap.singleton default_param 1.0
 let seeds_of_param param = StringMap.singleton param 1.0
 let empty_env seeds = { seeds; bound = StringSet.empty }
 let extend env x = { env with bound = StringSet.add x env.bound }
@@ -343,6 +341,67 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before ADEV"
 
+let free_float_vars te =
+  (*  Walks the typed AST and collects free variables whose type is float, ignoring locally bound variables. 
+      When no explicit seeds are given, infer_default_seeds uses it to decide:
+      * exactly one free float var → seed it with 1
+      * zero free float vars → no seeds
+      * multiple free float vars → error asking for explicit dVAR=1 seed. *)
+  let rec sample bound = function
+    | Distr1 (_, e1) -> expr bound e1
+    | Distr2 (_, e1, e2) -> StringSet.union (expr bound e1) (expr bound e2)
+  and union_many sets =
+    List.fold_left StringSet.union StringSet.empty sets
+  and expr bound (ty, _, TAExprNode ae) =
+    match ae with
+    | Var x ->
+        if is_float_ty ty && not (StringSet.mem x bound) then StringSet.singleton x
+        else StringSet.empty
+    | Const _ | BoolConst _ | FinConst _ | Nil | Unit | RuntimeError _ -> StringSet.empty
+    | Let (x, e1, e2) ->
+        StringSet.union (expr bound e1) (expr (StringSet.add x bound) e2)
+    | Fun (x, e1) -> expr (StringSet.add x bound) e1
+    | Fix (f, x, e1) -> expr (StringSet.add f (StringSet.add x bound)) e1
+    | MatchList (e1, e_nil, y, ys, e_cons) ->
+        union_many
+          [ expr bound e1
+          ; expr bound e_nil
+          ; expr (StringSet.add y (StringSet.add ys bound)) e_cons
+          ]
+    | Sample dist -> sample bound dist
+    | Cdf (dist, point) -> StringSet.union (sample bound dist) (expr bound point)
+    | DiscreteCase cases ->
+        union_many
+          (List.map
+             (fun (branch, prob) -> StringSet.union (expr bound branch) (expr bound prob))
+             cases)
+    | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
+    | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _) | FinEq (e1, e2, _)
+    | And (e1, e2) | Or (e1, e2) | Pair (e1, e2) | FuncApp (e1, e2)
+    | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
+        StringSet.union (expr bound e1) (expr bound e2)
+    | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
+        expr bound e1
+    | If (e1, e2, e3) ->
+        union_many [expr bound e1; expr bound e2; expr bound e3]
+    | CdfExpr (kernel, point) ->
+        StringSet.union (expr bound kernel) (expr bound point)
+    | SpecialFunc (_, args) -> union_many (List.map (expr bound) args)
+  in
+  expr StringSet.empty te
+
+let infer_default_seeds te =
+  match StringSet.elements (free_float_vars te) with
+  | [param] -> seeds_of_param param
+  | [] -> no_seeds
+  | params ->
+      unsupported
+        ("multiple free float variables found ("
+         ^ String.concat ", " params
+         ^ "); please specify at least one dVARIABLE seed, e.g. d"
+         ^ List.hd params
+         ^ "=1")
+
 (* discretized program
 -> raw AD dual program
 -> Simplify.expr raw_program
@@ -353,7 +412,7 @@ let dual_expectation_raw ?param ?seeds te =
     match seeds, param with
     | Some seeds, _ -> seeds
     | None, Some param -> seeds_of_param param
-    | None, None -> default_seeds
+    | None, None -> infer_default_seeds te
   in
   let ty, _, _ = te in
   trans (empty_env seeds) te (objective_dual ty)

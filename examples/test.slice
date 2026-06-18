@@ -1,1 +1,1 @@
-let a = uniform(0,1) in if a < theta then theta else theta + 1
+if true then theta*theta + 3*a else 1

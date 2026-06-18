@@ -103,14 +103,14 @@ before the simplified AD output.
 AD modes also accept `--at PARAM=VALUE` or `--at=PARAM=VALUE`. This uses
 `PARAM` as the differentiated variable, substitutes `VALUE` into the raw AD
 program, and then simplifies the simplified AD program again at that concrete
-point. Without `--at`, AD output is unchanged and still differentiates with
-respect to `theta`.
+point.
 
 AD modes can also accept bare assignments before the input file. `PARAM=VALUE`
 substitutes a concrete value, and `dPARAM=SEED` sets the forward-mode tangent
-seed for `PARAM`. If any explicit `dPARAM=SEED` assignments are provided, those
-seeds replace the default `dtheta=1`; otherwise the old default behavior is
-unchanged.
+seed for `PARAM`. If explicit `dPARAM=SEED` assignments are provided, unspecified
+variables get seed `0`. If no explicit seeds are provided, a program with exactly
+one free float variable seeds that variable with `1`; a program with multiple
+free float variables requires an explicit seed.
 
 ## Project Layout
 
