@@ -220,12 +220,19 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | SpecialFunc (name, args) ->
       let dargs = List.map (det_ad env) args in
       let primal_args = List.map dual_primal dargs in
+      let primal = Simplify.mk_special name primal_args in
       if is_float_ty ty then
-        pair
-          (node (SpecialFunc (name, primal_args)))
-          (runtime_error ("differentiation of special function " ^ name ^ " is not implemented"))
+        (match name, dargs with
+         | "sqrt", [darg] ->
+             pair
+               primal
+               (div (dual_tangent darg) (mul (const 2.0) primal))
+         | _ ->
+             pair
+               primal
+               (runtime_error ("differentiation of special function " ^ name ^ " is not implemented")))
       else
-        node (SpecialFunc (name, primal_args))
+        primal
 
   | RuntimeError msg ->
       if is_float_ty ty then dual_runtime msg else node (RuntimeError msg)

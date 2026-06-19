@@ -1,4 +1,5 @@
-(* Pre-pass that normalizes affine comparisons.
+(* Pre-pass that normalizes affine comparisons and selected sums of
+   independent distributions.
 
    Whenever a [Cmp] has the form [a*x + b op rhs] (where [x] is a
    sub-expression containing a [Sample] and [a], [b] are pure
@@ -12,9 +13,59 @@
    Affine extraction recognizes Add/Sub/Mul/Div whose other operand
    is a pure numeric literal.  Anything else (e.g. symbolic
    variables, samples on both sides, or sample in a denominator)
-   causes the rewrite to bail out and the original [Cmp] is kept. *)
+   causes the rewrite to bail out and the original [Cmp] is kept.
+
+   Sum normalization recognizes explicit independent samples:
+
+     gaussian(mu1, sigma1) + gaussian(mu2, sigma2)
+       => gaussian(mu1 + mu2, sqrt(sigma1^2 + sigma2^2))
+
+     gamma(a1, b) + gamma(a2, b)
+       => gamma(a1 + a2, b)
+
+   Gamma sums are folded only when the scale parameter matches. *)
 
 open Ast
+
+let node e = ExprNode e
+let const = Simplify.mk_const
+let add = Simplify.mk_add
+let mul = Simplify.mk_mul
+let sqrt_ x = Simplify.mk_special "sqrt" [x]
+let square x = mul x x
+
+let sum_exprs = function
+  | [] -> const 0.0
+  | x :: xs -> List.fold_left add x xs
+
+let rec rebuild_add = function
+  | [] -> const 0.0
+  | [x] -> x
+  | x :: xs -> add x (rebuild_add xs)
+
+let rec add_terms (ExprNode e) =
+  match e with
+  | Add (e1, e2) -> add_terms e1 @ add_terms e2
+  | _ -> [ExprNode e]
+
+let expr_equal e1 e2 =
+  Simplify.expr e1 = Simplify.expr e2
+
+let sample_expr d =
+  node (Sample d)
+
+let gaussian_std_sum sigmas =
+  (* [Gaussian] is parameterized by standard deviation in this codebase,
+     so independent variances add. *)
+  sqrt_ (sum_exprs (List.map square sigmas))
+
+let try_common_scale = function
+  | [] -> None
+  | (_, scale) :: rest ->
+      if List.for_all (fun (_, scale') -> expr_equal scale scale') rest then
+        Some scale
+      else
+        None
 
 (* Recognize a sub-expression that evaluates to a numeric constant
    (literal or arithmetic over literals).  Returns [None] for
@@ -83,6 +134,64 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
 
 let contains_sample (e : expr) : bool =
   contains_sample_env StringSet.empty e
+
+let is_deterministic env e =
+  not (contains_sample_env env e)
+
+let try_fold_gaussian_sum env terms =
+  let rec loop gaussians deterministic = function
+    | [] -> Some (List.rev gaussians, List.rev deterministic)
+    | term :: rest ->
+        let term' = Simplify.expr term in
+        (match term' with
+         | ExprNode (Sample (Distr2 (DGaussian, mean, sigma)))
+           when is_deterministic env mean && is_deterministic env sigma ->
+             loop ((mean, sigma) :: gaussians) deterministic rest
+         | _ when is_deterministic env term' ->
+             loop gaussians (term' :: deterministic) rest
+         | _ -> None)
+  in
+  match loop [] [] terms with
+  | Some (gaussians, deterministic) when List.length gaussians >= 2 ->
+      let means = List.map fst gaussians in
+      let sigmas = List.map snd gaussians in
+      Some
+        (sample_expr
+           (Distr2
+              ( DGaussian
+              , sum_exprs (means @ deterministic)
+              , gaussian_std_sum sigmas )))
+  | _ -> None
+
+let try_fold_gamma_sum env terms =
+  let rec loop gammas deterministic = function
+    | [] -> Some (List.rev gammas, List.rev deterministic)
+    | term :: rest ->
+        let term' = Simplify.expr term in
+        (match term' with
+         | ExprNode (Sample (Distr2 (DGamma, shape, scale)))
+           when is_deterministic env shape && is_deterministic env scale ->
+             loop ((shape, scale) :: gammas) deterministic rest
+         | _ when is_deterministic env term' ->
+             loop gammas (term' :: deterministic) rest
+         | _ -> None)
+  in
+  match loop [] [] terms with
+  | Some (gammas, deterministic) when List.length gammas >= 2 ->
+      (match try_common_scale gammas with
+       | Some scale ->
+           let gamma =
+             sample_expr
+               (Distr2 (DGamma, sum_exprs (List.map fst gammas), Simplify.expr scale))
+           in
+           Some (rebuild_add (gamma :: deterministic))
+       | None -> None)
+  | _ -> None
+
+let try_fold_distribution_sum env terms =
+  match try_fold_gaussian_sum env terms with
+  | Some e -> Some e
+  | None -> try_fold_gamma_sum env terms
 
 (* Decompose [e] into [(scale, kernel, offset)] such that
    [e = scale * kernel + offset].  The kernel is an arbitrary
@@ -267,7 +376,12 @@ let rec normalize_env (env : StringSet.t) (e : expr) : expr =
   | Deref e1 -> ExprNode (Deref (normalize_env env e1))
   | Assign (e1, e2) -> ExprNode (Assign (normalize_env env e1, normalize_env env e2))
   | Seq (e1, e2) -> ExprNode (Seq (normalize_env env e1, normalize_env env e2))
-  | Add (e1, e2) -> ExprNode (Add (normalize_env env e1, normalize_env env e2))
+  | Add (e1, e2) ->
+      let e1' = normalize_env env e1 in
+      let e2' = normalize_env env e2 in
+      (match try_fold_distribution_sum env (add_terms e1' @ add_terms e2') with
+       | Some e' -> e'
+       | None -> ExprNode (Add (e1', e2')))
   | Sub (e1, e2) -> ExprNode (Sub (normalize_env env e1, normalize_env env e2))
   | Mul (e1, e2) -> ExprNode (Mul (normalize_env env e1, normalize_env env e2))
   | Div (e1, e2) -> ExprNode (Div (normalize_env env e1, normalize_env env e2))
