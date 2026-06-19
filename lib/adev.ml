@@ -108,6 +108,37 @@ let is_float_ty ty =
   | TFloat _ -> true
   | _ -> false
 
+let rec texpr_contains_sample (_, _, TAExprNode ae) =
+  match ae with
+  | Sample _ -> true
+  | Const _ | Var _ | BoolConst _ | Nil | Unit
+  | FinConst _ | RuntimeError _ -> false
+  | Let (_, e1, e2) | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2)
+  | Div (e1, e2) | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _)
+  | FinEq (e1, e2, _) | And (e1, e2) | Or (e1, e2) | Pair (e1, e2)
+  | FuncApp (e1, e2) | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2)
+  | CdfExpr (e1, e2) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2
+  | Cdf (dist, point) ->
+      sample_contains_sample dist || texpr_contains_sample point
+  | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
+      texpr_contains_sample e1
+  | If (e1, e2, e3) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
+  | Fun (_, e1) | Fix (_, _, e1) -> texpr_contains_sample e1
+  | MatchList (e1, e2, _, _, e3) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
+  | DiscreteCase cases ->
+      List.exists
+        (fun (branch, prob) ->
+           texpr_contains_sample branch || texpr_contains_sample prob)
+        cases
+  | SpecialFunc (_, args) -> List.exists texpr_contains_sample args
+
+and sample_contains_sample = function
+  | Distr1 (_, e1) -> texpr_contains_sample e1
+  | Distr2 (_, e1, e2) -> texpr_contains_sample e1 || texpr_contains_sample e2
+
 let objective_dual ty dvalue =
   match Ast.force ty with
   | TFloat _ -> dvalue
@@ -121,6 +152,19 @@ let objective_dual ty dvalue =
 let rec sample_dual env = function
   | Distr1 (kind, e1) -> Distr1 (kind, det_ad env e1)
   | Distr2 (kind, e1, e2) -> Distr2 (kind, det_ad env e1, det_ad env e2)
+
+and cdf_kernel_dual env ((_, _, TAExprNode ae) as te) =
+  match ae with
+  | Sample dist -> node (Sample (sample_dual env dist))
+  | Add (e1, e2) when texpr_contains_sample te ->
+      node (Add (cdf_kernel_dual env e1, cdf_kernel_dual env e2))
+  | Sub (e1, e2) when texpr_contains_sample te ->
+      node (Sub (cdf_kernel_dual env e1, cdf_kernel_dual env e2))
+  | Mul (e1, e2) when texpr_contains_sample te ->
+      node (Mul (cdf_kernel_dual env e1, cdf_kernel_dual env e2))
+  | Div (e1, e2) when texpr_contains_sample te ->
+      node (Div (cdf_kernel_dual env e1, cdf_kernel_dual env e2))
+  | _ -> det_ad env te
 
 and primal env ((ty, _, _) as te) =
   if is_float_ty ty then dual_primal (det_ad env te)
@@ -216,7 +260,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Cdf (dist_exp, point) ->
       Cdf_ad.cdf (sample_dual env dist_exp) (det_ad env point)
   | CdfExpr (kernel, point) ->
-      Cdf_ad.cdf_expr (det_ad env kernel) (det_ad env point)
+      Cdf_ad.cdf_expr (cdf_kernel_dual env kernel) (det_ad env point)
   | SpecialFunc (name, args) ->
       let dargs = List.map (det_ad env) args in
       let primal_args = List.map dual_primal dargs in
