@@ -5,6 +5,14 @@ let transform source =
   let texpr = Slice.Inference.infer expr in
   Slice.Discretization.discretize_top texpr
 
+let normalize source =
+  Slice.Normalize.normalize (Slice.Parse.parse_expr source)
+
+let transform_normalized source =
+  let expr = normalize source in
+  let texpr = Slice.Inference.infer expr in
+  Slice.Discretization.discretize_top texpr
+
 let transform_at param value source =
   let expr = Slice.Parse.parse_expr source in
   let texpr = Slice.Inference.infer expr in
@@ -20,6 +28,11 @@ let adev_gradient source =
 
 let adev_dual_after_discretize source =
   let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Adev.dual_expectation texpr
+
+let adev_dual_after_normalized_discretize source =
+  let transformed = transform_normalized source in
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.dual_expectation texpr
 
@@ -115,6 +128,13 @@ let assert_const_dual expected_primal expected_tangent expr =
       assert_failure
         ("expected constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain e)
+
+let assert_close ?(eps = 1e-9) expected actual =
+  assert_equal
+    ~printer:string_of_float
+    ~cmp:(fun a b -> abs_float (a -. b) < eps)
+    expected
+    actual
 
 let cdf_point = function
   | Slice.Ast.ExprNode (Slice.Ast.Cdf (_, point))
@@ -234,6 +254,101 @@ let test_adev_gaussian_cdf_dual_simplifies _ =
     ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
     0.3989422804014327
     tangent
+
+let test_normalize_sums_independent_gaussians _ =
+  match normalize "gaussian(1, 2) + gaussian(3, 4)" with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Sample
+         (Slice.Ast.Distr2
+            ( Slice.Ast.DGaussian
+            , Slice.Ast.ExprNode (Slice.Ast.Const mean)
+            , Slice.Ast.ExprNode (Slice.Ast.Const sigma) ))) ->
+      assert_close 4.0 mean;
+      assert_close (sqrt 20.0) sigma
+  | e ->
+      assert_failure
+        ("expected normalized gaussian sum, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let test_normalize_sums_independent_gammas_with_common_scale _ =
+  match normalize "gamma(2, 3) + gamma(4, 3)" with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Sample
+         (Slice.Ast.Distr2
+            ( Slice.Ast.DGamma
+            , Slice.Ast.ExprNode (Slice.Ast.Const shape)
+            , Slice.Ast.ExprNode (Slice.Ast.Const scale) ))) ->
+      assert_close 6.0 shape;
+      assert_close 3.0 scale
+  | e ->
+      assert_failure
+        ("expected normalized gamma sum, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let test_normalize_keeps_gammas_with_different_scales _ =
+  match normalize "gamma(2, 3) + gamma(4, 5)" with
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Add
+         ( Slice.Ast.ExprNode
+             (Slice.Ast.Sample
+                (Slice.Ast.Distr2 (Slice.Ast.DGamma, _, _)))
+         , Slice.Ast.ExprNode
+             (Slice.Ast.Sample
+                (Slice.Ast.Distr2 (Slice.Ast.DGamma, _, _))) )) ->
+      ()
+  | e ->
+      assert_failure
+        ("expected gamma sum with different scales to stay expanded, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let test_adev_uniform_sum_cdf_expr_simplifies _ =
+  let dual =
+    adev_dual_after_normalized_discretize
+      "uniform(0, 1) + uniform(0, 1) < theta"
+  in
+  let primal, tangent = eval_dual_with_theta 0.5 dual in
+  assert_close 0.125 primal;
+  assert_close 0.5 tangent
+
+let test_adev_scaled_uniform_sum_cdf_expr_simplifies _ =
+  let dual =
+    adev_dual_after_normalized_discretize
+      "2 * uniform(0, 1) + uniform(0, 10) < theta"
+  in
+  let primal, tangent = eval_dual_with_theta 1.0 dual in
+  assert_close 0.025 primal;
+  assert_close 0.05 tangent
+
+let test_adev_uniform_product_cdf_expr_simplifies _ =
+  let dual =
+    adev_dual_after_normalized_discretize
+      "uniform(0, 1) * uniform(0, 1) < theta"
+  in
+  let primal, tangent = eval_dual_with_theta 0.5 dual in
+  assert_close (0.5 *. (1.0 -. log 0.5)) primal;
+  assert_close (-. log 0.5) tangent
+
+let test_adev_gaussian_affine_sum_cdf_expr_simplifies _ =
+  let dual =
+    adev_dual_after_normalized_discretize
+      "2 * gaussian(0, 1) + gaussian(0, 1) < theta"
+  in
+  let primal, tangent = eval_dual_with_theta 0.0 dual in
+  assert_close 0.5 primal;
+  assert_close (1.0 /. sqrt (10.0 *. (4.0 *. atan 1.0))) tangent
+
+let test_adev_weighted_gamma_sum_cdf_expr_simplifies _ =
+  let dual =
+    adev_dual_after_normalized_discretize
+      "2 * gamma(2, 3) + gamma(4, 6) < theta"
+  in
+  let primal, tangent = eval_dual_with_theta 6.0 dual in
+  let series =
+    1.0 +. 1.0 +. (1.0 /. 2.0) +. (1.0 /. 6.0)
+    +. (1.0 /. 24.0) +. (1.0 /. 120.0)
+  in
+  assert_close (1.0 -. (exp (-1.0) *. series)) primal;
+  assert_close (exp (-1.0) /. 720.0) tangent
 
 let test_adev_beta_cdf_dual_simplifies_at _ =
   let raw = adev_dual_raw_after_discretize "beta(2, 3) < theta" in
@@ -640,6 +755,14 @@ let suite =
   ; "test_adev_uniform_cdf_dual_simplifies" >:: test_adev_uniform_cdf_dual_simplifies
   ; "test_adev_uniform_cdf_gradient_simplifies" >:: test_adev_uniform_cdf_gradient_simplifies
   ; "test_adev_gaussian_cdf_dual_simplifies" >:: test_adev_gaussian_cdf_dual_simplifies
+  ; "test_normalize_sums_independent_gaussians" >:: test_normalize_sums_independent_gaussians
+  ; "test_normalize_sums_independent_gammas_with_common_scale" >:: test_normalize_sums_independent_gammas_with_common_scale
+  ; "test_normalize_keeps_gammas_with_different_scales" >:: test_normalize_keeps_gammas_with_different_scales
+  ; "test_adev_uniform_sum_cdf_expr_simplifies" >:: test_adev_uniform_sum_cdf_expr_simplifies
+  ; "test_adev_scaled_uniform_sum_cdf_expr_simplifies" >:: test_adev_scaled_uniform_sum_cdf_expr_simplifies
+  ; "test_adev_uniform_product_cdf_expr_simplifies" >:: test_adev_uniform_product_cdf_expr_simplifies
+  ; "test_adev_gaussian_affine_sum_cdf_expr_simplifies" >:: test_adev_gaussian_affine_sum_cdf_expr_simplifies
+  ; "test_adev_weighted_gamma_sum_cdf_expr_simplifies" >:: test_adev_weighted_gamma_sum_cdf_expr_simplifies
   ; "test_adev_beta_cdf_dual_simplifies_at" >:: test_adev_beta_cdf_dual_simplifies_at
   ; "test_adev_dual_at_substitutes_raw_and_simplifies" >:: test_adev_dual_at_substitutes_raw_and_simplifies
   ; "test_adev_dual_at_can_use_non_theta_parameter" >:: test_adev_dual_at_can_use_non_theta_parameter
