@@ -65,13 +65,29 @@ let seeds assignments =
     Slice.Adev.no_seeds
     assignments
 
-let contains_substring s needle =
+let substring_index s needle =
   let len = String.length s in
   let n = String.length needle in
   let rec loop i =
-    i + n <= len && (String.sub s i n = needle || loop (i + 1))
+    if n = 0 then Some 0
+    else if i + n > len then None
+    else if String.sub s i n = needle then Some i
+    else loop (i + 1)
   in
-  n = 0 || loop 0
+  loop 0
+
+let contains_substring s needle =
+  Option.is_some (substring_index s needle)
+
+let assert_substring_order s before after =
+  match substring_index s before, substring_index s after with
+  | Some i, Some j ->
+      assert_bool
+        (before ^ " should appear before " ^ after)
+        (i < j)
+  | _ ->
+      assert_failure
+        ("expected substrings in output: " ^ before ^ ", " ^ after)
 
 let eval_float_with_theta theta expr =
   match Slice.Interp.eval [("theta", Slice.Ast.VFloat theta)] expr with
@@ -215,6 +231,27 @@ let test_adev_includes_probability_and_body_derivatives _ =
     ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
     0.6
     (eval_float_with_theta 0.3 grad)
+
+let test_adev_raw_uses_let_bound_forward_rules _ =
+  let source =
+    "let x = discrete(theta, 1 - theta) in if x <#2 1#2 then theta else 0"
+  in
+  let raw_plain =
+    Slice.Pretty.string_of_expr_plain (adev_dual_raw_after_discretize source)
+  in
+  assert_bool "raw AD program should bind transformed arithmetic operands"
+    (contains_substring raw_plain "_adev_yhat");
+  assert_bool "raw AD program should bind transformed discrete probabilities"
+    (contains_substring raw_plain "_adev_phat");
+  assert_bool "raw AD program should bind transformed discrete continuations"
+    (contains_substring raw_plain "_adev_bhat");
+  assert_bool "raw AD program should bind weighted discrete arms"
+    (contains_substring raw_plain "_adev_chat");
+  assert_substring_order raw_plain "_adev_phat" "_adev_bhat";
+  assert_substring_order raw_plain "_adev_bhat" "_adev_chat";
+  let primal, tangent = eval_dual_with_theta 0.3 (adev_dual_after_discretize source) in
+  assert_close 0.09 primal;
+  assert_close 0.6 tangent
 
 let test_adev_uniform_cdf_dual_simplifies _ =
   let dual = adev_dual_after_discretize "uniform(0, 1) < theta" in
@@ -752,6 +789,7 @@ let suite =
   ; "test_discretizes_uniform_comparison" >:: test_discretizes_uniform_comparison
   ; "test_adev_enumerates_direct_discrete_comparison" >:: test_adev_enumerates_direct_discrete_comparison
   ; "test_adev_includes_probability_and_body_derivatives" >:: test_adev_includes_probability_and_body_derivatives
+  ; "test_adev_raw_uses_let_bound_forward_rules" >:: test_adev_raw_uses_let_bound_forward_rules
   ; "test_adev_uniform_cdf_dual_simplifies" >:: test_adev_uniform_cdf_dual_simplifies
   ; "test_adev_uniform_cdf_gradient_simplifies" >:: test_adev_uniform_cdf_gradient_simplifies
   ; "test_adev_gaussian_cdf_dual_simplifies" >:: test_adev_gaussian_cdf_dual_simplifies

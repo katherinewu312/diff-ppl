@@ -8,7 +8,9 @@
    continuation-passing style:
 
      Dexpect[discrete(p_i : v_i)] k
-       = sum_i D[p_i] *D Dexpect[v_i] k
+       = sum_i let phat_i = D[p_i] in
+               let bhat_i = Dexpect[v_i] k in
+               phat_i *D bhat_i
 
    This is the n-ary analog of ADEV's flip_enum rule. *)
 
@@ -50,6 +52,10 @@ let runtime_error msg = node (RuntimeError ("ADEV: " ^ msg))
 
 let unsupported msg = failwith ("ADEV: " ^ msg)
 
+let bind_ad hint rhs body =
+  let x = Util.fresh_var hint in
+  node (Let (x, rhs, body (node (Var x))))
+
 let dual_primal e =
   match e with
   | ExprNode (Pair (p, _)) -> p
@@ -90,6 +96,11 @@ let rec sum_duals = function
   | [] -> pair (const 0.0) (const 0.0)
   | [x] -> x
   | x :: xs -> dual_add x (sum_duals xs)
+
+let dual_binary op e1 e2 =
+  bind_ad "_adev_yhat" e1 (fun yhat1 ->
+    bind_ad "_adev_yhat" e2 (fun yhat2 ->
+      op yhat1 yhat2))
 
 let ty_of (ty, _, _) = ty
 let effect_of (_, eff, _) = Ast.force_effect eff
@@ -181,10 +192,10 @@ and det_ad env (ty, eff, TAExprNode ae) =
       else
         node (Var x)
 
-  | Add (e1, e2) -> dual_add (det_ad env e1) (det_ad env e2)
-  | Sub (e1, e2) -> dual_sub (det_ad env e1) (det_ad env e2)
-  | Mul (e1, e2) -> dual_mul (det_ad env e1) (det_ad env e2)
-  | Div (e1, e2) -> dual_div (det_ad env e1) (det_ad env e2)
+  | Add (e1, e2) -> dual_binary dual_add (det_ad env e1) (det_ad env e2)
+  | Sub (e1, e2) -> dual_binary dual_sub (det_ad env e1) (det_ad env e2)
+  | Mul (e1, e2) -> dual_binary dual_mul (det_ad env e1) (det_ad env e2)
+  | Div (e1, e2) -> dual_binary dual_div (det_ad env e1) (det_ad env e2)
 
   | Cmp (op, e1, e2, flipped) ->
       node (Cmp (op, primal env e1, primal env e2, flipped))
@@ -288,13 +299,15 @@ and det_ad env (ty, eff, TAExprNode ae) =
 and trans env ((_, _, TAExprNode ae) as te) k =
   match ae with
   | DiscreteCase cases ->
-      let terms =
-        List.map
-          (fun (branch, prob) ->
-             dual_mul (det_ad env prob) (trans env branch k))
-          cases
+      let rec bind_cases chats = function
+        | [] -> sum_duals (List.rev chats)
+        | (branch, prob) :: rest ->
+            bind_ad "_adev_phat" (det_ad env prob) (fun phat ->
+              bind_ad "_adev_bhat" (trans env branch k) (fun bhat ->
+                bind_ad "_adev_chat" (dual_mul phat bhat) (fun chat ->
+                  bind_cases (chat :: chats) rest)))
       in
-      sum_duals terms
+      bind_cases [] cases
 
   | Let (x, e1, e2) ->
       trans env e1 (fun dx ->
@@ -324,16 +337,16 @@ and trans env ((_, _, TAExprNode ae) as te) k =
 
   | Add (e1, e2) ->
       trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_add d1 d2)))
+        trans env e2 (fun d2 -> k (dual_binary dual_add d1 d2)))
   | Sub (e1, e2) ->
       trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_sub d1 d2)))
+        trans env e2 (fun d2 -> k (dual_binary dual_sub d1 d2)))
   | Mul (e1, e2) ->
       trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_mul d1 d2)))
+        trans env e2 (fun d2 -> k (dual_binary dual_mul d1 d2)))
   | Div (e1, e2) ->
       trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_div d1 d2)))
+        trans env e2 (fun d2 -> k (dual_binary dual_div d1 d2)))
 
   | Cmp (op, e1, e2, flipped) ->
       trans env e1 (fun d1 ->

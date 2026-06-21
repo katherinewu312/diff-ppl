@@ -54,13 +54,15 @@ let node e = ExprNode e
 let mk_const f = node (Const f)
 let mk_bool b = node (BoolConst b)
 let mk_pair a b = node (Pair (a, b))
-let mk_first e =
+let rec mk_first e =
   match e with
   | ExprNode (Pair (a, _)) -> a
+  | ExprNode (Let (x, e1, e2)) -> node (Let (x, e1, mk_first e2))
   | _ -> node (First e)
-let mk_second e =
+let rec mk_second e =
   match e with
   | ExprNode (Pair (_, b)) -> b
+  | ExprNode (Let (x, e1, e2)) -> node (Let (x, e1, mk_second e2))
   | _ -> node (Second e)
 
 let const_value = function
@@ -89,6 +91,12 @@ let is_zero = function
 let is_one = function
   | ExprNode (Const f) -> f = 1.0
   | _ -> false
+
+let has_prefix s prefix =
+  let n = String.length prefix in
+  String.length s >= n && String.sub s 0 n = prefix
+
+let generated_ad_name x = has_prefix x "_adev_"
 
 let mk_add a b =
   match const_value a, const_value b with
@@ -450,6 +458,10 @@ and expr_env env (ExprNode e) =
       let e1' = expr_env env e1 in
       if inlineable e1' then
         expr_env env (subst_var x e1' e2)
+      else if generated_ad_name x then
+        match e1' with
+        | ExprNode (Pair _) -> expr_env env (subst_var x e1' e2)
+        | _ -> node (Let (x, e1', expr_env (StringMap.remove x env) e2))
       else
         node (Let (x, e1', expr_env (StringMap.remove x env) e2))
   | Sample d -> node (Sample (sample_env env d))
