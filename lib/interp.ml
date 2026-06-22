@@ -11,6 +11,17 @@ let rec lookup x env =
   | [] -> raise (RuntimeError ("Unbound variable: " ^ x))
   | (y, v)::rest -> if x = y then v else lookup x rest
 
+let rec value_to_expr = function
+  | VBool b -> ExprNode (BoolConst b)
+  | VFloat f -> ExprNode (Const f)
+  | VPair (v1, v2) -> ExprNode (Pair (value_to_expr v1, value_to_expr v2))
+  | VFin (k, n) -> ExprNode (FinConst (k, n))
+  | VUnit -> ExprNode Unit
+  | VNil -> ExprNode Nil
+  | VCons (v_hd, v_tl) -> ExprNode (Cons (value_to_expr v_hd, value_to_expr v_tl))
+  | VRef r -> ExprNode (Ref (value_to_expr !r))
+  | VClosure (x, _, _) -> raise (RuntimeError ("Cannot reify closure value: " ^ x))
+
 (* Main evaluation function *)
 let rec eval (env : env) (ExprNode e_node : expr) : value = 
   match e_node with
@@ -270,3 +281,6 @@ and eval_dist env dist_exp =
 
 (* Entry point for evaluation with an empty environment *)
 let run e = eval [] e 
+
+let eval_to_expr env e =
+  value_to_expr (eval env e)

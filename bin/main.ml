@@ -100,6 +100,12 @@ let apply_values_raw values e =
 let apply_values_simplified values e =
   Slice.Simplify.algebraic (apply_values_raw values e)
 
+let finalize_simplified_ad ad_mode values e =
+  let simplified = apply_values_simplified values e in
+  match ad_mode with
+  | Forward -> simplified
+  | Reverse -> Slice.Reverse.interpret_closed_or_original simplified
+
 let run ~print_all ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
@@ -125,7 +131,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         in
         Some
           { raw = apply_values_raw ad_args.values raw
-          ; simplified = apply_values_simplified ad_args.values simplified
+          ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
           }
     | AdDual ->
         let discretized_texpr = Slice.Inference.infer transformed in
@@ -140,7 +146,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         in
         Some
           { raw = apply_values_raw ad_args.values raw
-          ; simplified = apply_values_simplified ad_args.values simplified
+          ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
           }
   in
   let output_expr =
