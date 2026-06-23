@@ -172,6 +172,8 @@ let rec vars (ExprNode e) =
       union_many [vars e1; vars e2]
   | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
       vars e1
+  | Reset e1 -> vars e1
+  | Shift (k, e1) -> StringSet.add k (vars e1)
   | If (e1, e2, e3) ->
       union_many [vars e1; vars e2; vars e3]
   | Fun (x, e1) -> StringSet.add x (vars e1)
@@ -209,6 +211,8 @@ let rec free_vars (ExprNode e) =
       StringSet.union (free_vars e1) (free_vars e2)
   | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
       free_vars e1
+  | Reset e1 -> free_vars e1
+  | Shift (k, e1) -> StringSet.remove k (free_vars e1)
   | If (e1, e2, e3) ->
       union_many [free_vars e1; free_vars e2; free_vars e3]
   | Fun (x, e1) -> StringSet.remove x (free_vars e1)
@@ -378,6 +382,14 @@ and subst_var_with name replacement replacement_fv (ExprNode e) =
            , subst_var_with name replacement replacement_fv e2 ))
   | Unit -> node Unit
   | RuntimeError s -> node (RuntimeError s)
+  | Reset e1 ->
+      node (Reset (subst_var_with name replacement replacement_fv e1))
+  | Shift (k, e1) ->
+      if k = name then
+        node (Shift (k, e1))
+      else
+        let k', e1' = rename_if_needed k e1 name replacement_fv in
+        node (Shift (k', subst_var_with name replacement replacement_fv e1'))
   | Add (e1, e2) ->
       node
         (Add
@@ -571,6 +583,8 @@ and expr_env env (ExprNode e) =
        | _ -> node (Seq (e1', expr_env env e2)))
   | Unit -> node Unit
   | RuntimeError s -> node (RuntimeError s)
+  | Reset e1 -> node (Reset (expr_env env e1))
+  | Shift (k, e1) -> node (Shift (k, expr_env (StringMap.remove k env) e1))
   | Add (e1, e2) -> mk_add (expr_env env e1) (expr_env env e2)
   | Sub (e1, e2) -> mk_sub (expr_env env e1) (expr_env env e2)
   | Mul (e1, e2) -> mk_mul (expr_env env e1) (expr_env env e2)
@@ -777,6 +791,8 @@ let algebraic e =
          | ExprNode (Deref e1) -> node (Deref (go e1))
          | ExprNode (Assign (e1, e2)) -> node (Assign (go e1, go e2))
          | ExprNode (Seq (e1, e2)) -> expr (node (Seq (go e1, go e2)))
+         | ExprNode (Reset e1) -> expr (node (Reset (go e1)))
+         | ExprNode (Shift (k, e1)) -> expr (node (Shift (k, go e1)))
          | ExprNode (DiscreteCase cases) ->
              node (DiscreteCase (List.map (fun (b, p) -> (go b, go p)) cases))
          | ExprNode (SpecialFunc (name, args)) ->

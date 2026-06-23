@@ -319,6 +319,8 @@ let rec contains_sample (ExprNode e) =
       contains_sample e1 || contains_sample e2
   | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
       contains_sample e1
+  | Reset e1 -> contains_sample e1
+  | Shift (_, e1) -> contains_sample e1
   | If (e1, e2, e3) ->
       contains_sample e1 || contains_sample e2 || contains_sample e3
   | Fun (_, e1) | Fix (_, _, e1) -> contains_sample e1

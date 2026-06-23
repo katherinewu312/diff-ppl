@@ -134,6 +134,8 @@ let rec texpr_contains_sample (_, _, TAExprNode ae) =
       sample_contains_sample dist || texpr_contains_sample point
   | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
       texpr_contains_sample e1
+  | Reset e1 -> texpr_contains_sample e1
+  | Shift (_, e1) -> texpr_contains_sample e1
   | If (e1, e2, e3) ->
       texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
   | Fun (_, e1) | Fix (_, _, e1) -> texpr_contains_sample e1
@@ -291,6 +293,8 @@ and det_ad env (ty, eff, TAExprNode ae) =
 
   | RuntimeError msg ->
       if is_float_ty ty then dual_runtime msg else node (RuntimeError msg)
+  | Reset _ | Shift _ ->
+      unsupported "shift/reset are internal reverse-AD constructs"
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before ADEV"
   | DiscreteCase _ ->
@@ -402,6 +406,9 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | RuntimeError _ ->
       k (det_ad env te)
 
+  | Reset _ | Shift _ ->
+      unsupported "shift/reset are internal reverse-AD constructs"
+
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before ADEV"
 
@@ -446,6 +453,8 @@ let free_float_vars te =
         StringSet.union (expr bound e1) (expr bound e2)
     | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
         expr bound e1
+    | Reset e1 -> expr bound e1
+    | Shift (k, e1) -> expr (StringSet.add k bound) e1
     | If (e1, e2, e3) ->
         union_many [expr bound e1; expr bound e2; expr bound e3]
     | CdfExpr (kernel, point) ->

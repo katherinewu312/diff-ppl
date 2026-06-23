@@ -1,16 +1,18 @@
-(* Deterministic reverse-mode AD.
+(* Reverse-mode AD.
 
    Float values are represented as [(primal, adjoint_ref)].  The
    transformation is continuation-based: local arithmetic nodes call
    the continuation first, which seeds/propagates adjoints through the
    rest of the program, then perform their local backprop updates.
 
-   Probabilistic constructs are intentionally rejected here; the
-   expectation-level reverse rules will be added separately. *)
+   Discrete distributions are handled by exact enumeration in CPS.  The
+   branch probabilities and branch continuations are combined with the
+   same Wang-style reverse primitives used for deterministic arithmetic. *)
 
 open Ast
 
 module StringSet = Adev.StringSet
+module StringMap = Adev.StringMap
 
 type seeds = Adev.seeds
 
@@ -34,6 +36,8 @@ let ref_ e = node (Ref e)
 let deref e = node (Deref e)
 let assign e1 e2 = node (Assign (e1, e2))
 let seq e1 e2 = node (Seq (e1, e2))
+let reset e = node (Reset e)
+let shift k e = node (Shift (k, e))
 let unit_ = node Unit
 let zero = const 0.0
 let one = const 1.0
@@ -46,6 +50,16 @@ let is_float_ty ty =
   | _ -> false
 
 let effect_of (_, eff, _) = Ast.force_effect eff
+
+let is_prob_effect eff =
+  match Ast.force_effect eff with
+  | Prob -> true
+  | Pure | EMeta _ -> false
+
+let function_returns_prob (ty, _, _) =
+  match Ast.force ty with
+  | TFun (_, eff, _) -> is_prob_effect eff
+  | _ -> false
 
 let primal e =
   match e with
@@ -76,15 +90,68 @@ let rec sequence = function
   | [e] -> e
   | e :: es -> seq e (sequence es)
 
+let apply_cont k yhat =
+  node (FuncApp (node (Var k), yhat))
+
 let binary_reverse primal_op back1 back2 yhat1 yhat2 k =
-  bind_rev "_rev_yhat"
-    (reverse_float (primal_op (primal yhat1) (primal yhat2)))
-    (fun yhat ->
-       sequence
-         [ k yhat
-         ; add_adjoint yhat1 (back1 yhat yhat1 yhat2)
-         ; add_adjoint yhat2 (back2 yhat yhat1 yhat2)
-         ])
+  let cont = Util.fresh_var "_rev_k" in
+  k
+    (shift cont
+       (bind_rev "_rev_yhat"
+          (reverse_float (primal_op (primal yhat1) (primal yhat2)))
+          (fun yhat ->
+             sequence
+               [ apply_cont cont yhat
+               ; add_adjoint yhat1 (back1 yhat yhat1 yhat2)
+               ; add_adjoint yhat2 (back2 yhat yhat1 yhat2)
+               ])))
+
+let addR yhat1 yhat2 k =
+  binary_reverse
+    add
+    (fun yhat _ _ -> adjoint_value yhat)
+    (fun yhat _ _ -> adjoint_value yhat)
+    yhat1
+    yhat2
+    k
+
+let subR yhat1 yhat2 k =
+  binary_reverse
+    sub
+    (fun yhat _ _ -> adjoint_value yhat)
+    (fun yhat _ _ -> sub zero (adjoint_value yhat))
+    yhat1
+    yhat2
+    k
+
+let mulR yhat1 yhat2 k =
+  binary_reverse
+    mul
+    (fun yhat _ yhat2 -> mul (adjoint_value yhat) (primal yhat2))
+    (fun yhat yhat1 _ -> mul (adjoint_value yhat) (primal yhat1))
+    yhat1
+    yhat2
+    k
+
+let divR yhat1 yhat2 k =
+  binary_reverse
+    div
+    (fun yhat _ yhat2 -> div (adjoint_value yhat) (primal yhat2))
+    (fun yhat yhat1 yhat2 ->
+       sub zero
+         (div
+            (mul (adjoint_value yhat) (primal yhat1))
+            (mul (primal yhat2) (primal yhat2))))
+    yhat1
+    yhat2
+    k
+
+let rec sumR = function
+  | [] -> reverse_float zero
+  | [yhat] -> yhat
+  | yhat :: rest ->
+      bind_rev "_rev_sum" (sumR rest) (fun rest_yhat ->
+        addR yhat rest_yhat (fun sum_yhat -> sum_yhat))
 
 let rec sample_value env = function
   | Distr1 (kind, e1) -> Distr1 (kind, primal (value env e1))
@@ -139,32 +206,26 @@ and value env (ty, _, TAExprNode ae) =
   | First e1 -> first (value env e1)
   | Second e1 -> second (value env e1)
   | Fun (x, e1) ->
-      let k = Util.fresh_var "_rev_k" in
-      node
-        (Fun
-           ( x
-           , node
-               (Fun
-                  ( k
-                  , trans (StringSet.add x env) e1
-                      (fun v -> node (FuncApp (node (Var k), v))) )) ))
+      if is_prob_effect (effect_of e1) then
+        let k = Util.fresh_var "_rev_kappa" in
+        node
+          (Fun
+             ( x
+             , node
+                 (Fun
+                    ( k
+                    , prob_trans (StringSet.add x env) e1
+                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+      else
+        node (Fun (x, trans (StringSet.add x env) e1 (fun v -> v)))
   | FuncApp (e1, e2) ->
-      let r = Util.fresh_var "_rev_app" in
-      node
-        (FuncApp
-           ( node (FuncApp (value env e1, value env e2))
-           , node (Fun (r, node (Var r))) ))
+      node (FuncApp (value env e1, value env e2))
   | Fix (f, x, e1) ->
-      let k = Util.fresh_var "_rev_k" in
       node
         (Fix
            ( f
            , x
-           , node
-               (Fun
-                  ( k
-                  , trans (StringSet.add f (StringSet.add x env)) e1
-                      (fun v -> node (FuncApp (node (Var k), v))) )) ))
+           , trans (StringSet.add f (StringSet.add x env)) e1 (fun v -> v) ))
   | FinConst (k, n) -> node (FinConst (k, n))
   | Observe e1 -> node (Observe (value env e1))
   | Nil -> node Nil
@@ -193,6 +254,8 @@ and value env (ty, _, TAExprNode ae) =
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | DiscreteCase _ ->
       unsupported "discrete reverse AD is not implemented yet"
+  | Reset _ | Shift _ ->
+      unsupported "shift/reset are internal reverse-AD constructs"
 
 and trans env ((_, _, TAExprNode ae) as te) k =
   match ae with
@@ -201,64 +264,41 @@ and trans env ((_, _, TAExprNode ae) as te) k =
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              binary_reverse
-                add
-                (fun yhat _ _ -> adjoint_value yhat)
-                (fun yhat _ _ -> adjoint_value yhat)
-                yhat1
-                yhat2
-                k))))
+              addR yhat1 yhat2 k))))
   | Sub (e1, e2) ->
       trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              binary_reverse
-                sub
-                (fun yhat _ _ -> adjoint_value yhat)
-                (fun yhat _ _ -> sub zero (adjoint_value yhat))
-                yhat1
-                yhat2
-                k))))
+              subR yhat1 yhat2 k))))
   | Mul (e1, e2) ->
       trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              binary_reverse
-                mul
-                (fun yhat _ yhat2 -> mul (adjoint_value yhat) (primal yhat2))
-                (fun yhat yhat1 _ -> mul (adjoint_value yhat) (primal yhat1))
-                yhat1
-                yhat2
-                k))))
+              mulR yhat1 yhat2 k))))
   | Div (e1, e2) ->
       trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              binary_reverse
-                div
-                (fun yhat _ yhat2 -> div (adjoint_value yhat) (primal yhat2))
-                (fun yhat yhat1 yhat2 ->
-                   sub zero
-                     (div
-                        (mul (adjoint_value yhat) (primal yhat1))
-                        (mul (primal yhat2) (primal yhat2))))
-                yhat1
-                yhat2
-                k))))
+              divR yhat1 yhat2 k))))
   | SpecialFunc ("sqrt", [e1]) ->
       trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          bind_rev "_rev_yhat"
-            (reverse_float (special "sqrt" [primal yhat1]))
-            (fun yhat ->
-               sequence
-                 [ k yhat
-                 ; add_adjoint yhat1
-                     (div (adjoint_value yhat) (mul (const 2.0) (primal yhat)))
-                 ])))
+          let cont = Util.fresh_var "_rev_k" in
+          k
+            (shift cont
+               (bind_rev "_rev_yhat"
+                  (reverse_float (special "sqrt" [primal yhat1]))
+                  (fun yhat ->
+                     sequence
+                       [ apply_cont cont yhat
+                       ; add_adjoint yhat1
+                           (div
+                              (adjoint_value yhat)
+                              (mul (const 2.0) (primal yhat)))
+                       ])))))
   | SpecialFunc (name, _) ->
       unsupported ("reverse differentiation of special function " ^ name ^ " is not implemented")
   | Let (x, e1, e2) ->
@@ -276,9 +316,7 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | FuncApp (e1, e2) ->
       trans env e1 (fun f ->
         trans env e2 (fun arg ->
-          let x = Util.fresh_var "_rev_app" in
-          let cont = node (Fun (x, k (node (Var x)))) in
-          node (FuncApp (node (FuncApp (f, arg)), cont))))
+          k (node (FuncApp (f, arg)))))
   | Cons (e1, e2) ->
       trans env e1 (fun yhat1 ->
         trans env e2 (fun yhat2 -> k (node (Cons (yhat1, yhat2)))))
@@ -312,17 +350,169 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | And _ | Or _ | Not _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
   | RuntimeError _ ->
       k (value env te)
+  | Reset _ | Shift _ ->
+      unsupported "shift/reset are internal reverse-AD constructs"
+
+and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
+  match ae with
+  | DiscreteCase cases ->
+      let rec bind_cases chats = function
+        | [] -> sumR (List.rev chats)
+        | (branch, prob) :: rest ->
+            trans env prob (fun phat_raw ->
+              bind_rev "_rev_phat" phat_raw (fun phat ->
+                bind_rev "_rev_bhat" (prob_trans env branch kappa) (fun bhat ->
+                  bind_rev "_rev_chat"
+                    (mulR phat bhat (fun chat -> chat))
+                    (fun chat -> bind_cases (chat :: chats) rest))))
+      in
+      bind_cases [] cases
+
+  | Let (x, e1, e2) ->
+      prob_trans env e1 (fun v ->
+        node (Let (x, v, prob_trans (StringSet.add x env) e2 kappa)))
+
+  | If (e1, e2, e3) ->
+      prob_trans env e1 (fun cond ->
+        node (If (cond, prob_trans env e2 kappa, prob_trans env e3 kappa)))
+
+  | And (e1, e2) ->
+      prob_trans env e1 (fun b1 ->
+        node (If (b1, prob_trans env e2 kappa, kappa (bool false))))
+
+  | Or (e1, e2) ->
+      prob_trans env e1 (fun b1 ->
+        node (If (b1, kappa (bool true), prob_trans env e2 kappa)))
+
+  | Not e1 ->
+      prob_trans env e1 (fun b1 -> kappa (node (Not b1)))
+
+  | Seq (e1, e2) ->
+      prob_trans env e1 (fun _ -> prob_trans env e2 kappa)
+
+  | Observe e1 ->
+      prob_trans env e1 (fun b ->
+        node (Seq (node (Observe b), kappa unit_)))
+
+  | Add (e1, e2) ->
+      prob_trans env e1 (fun yhat1_raw ->
+        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
+          prob_trans env e2 (fun yhat2_raw ->
+            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
+              addR yhat1 yhat2 kappa))))
+  | Sub (e1, e2) ->
+      prob_trans env e1 (fun yhat1_raw ->
+        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
+          prob_trans env e2 (fun yhat2_raw ->
+            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
+              subR yhat1 yhat2 kappa))))
+  | Mul (e1, e2) ->
+      prob_trans env e1 (fun yhat1_raw ->
+        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
+          prob_trans env e2 (fun yhat2_raw ->
+            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
+              mulR yhat1 yhat2 kappa))))
+  | Div (e1, e2) ->
+      prob_trans env e1 (fun yhat1_raw ->
+        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
+          prob_trans env e2 (fun yhat2_raw ->
+            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
+              divR yhat1 yhat2 kappa))))
+
+  | Cmp (op, e1, e2, flipped) ->
+      prob_trans env e1 (fun yhat1 ->
+        prob_trans env e2 (fun yhat2 ->
+          kappa (node (Cmp (op, primal yhat1, primal yhat2, flipped)))))
+  | FinCmp (op, e1, e2, n, flipped) ->
+      prob_trans env e1 (fun v1 ->
+        prob_trans env e2 (fun v2 ->
+          kappa (node (FinCmp (op, v1, v2, n, flipped)))))
+  | FinEq (e1, e2, n) ->
+      prob_trans env e1 (fun v1 ->
+        prob_trans env e2 (fun v2 ->
+          kappa (node (FinEq (v1, v2, n)))))
+
+  | Pair (e1, e2) ->
+      prob_trans env e1 (fun v1 ->
+        prob_trans env e2 (fun v2 -> kappa (pair v1 v2)))
+  | First e1 ->
+      prob_trans env e1 (fun v -> kappa (first v))
+  | Second e1 ->
+      prob_trans env e1 (fun v -> kappa (second v))
+  | FuncApp (e1, e2) ->
+      prob_trans env e1 (fun f ->
+        prob_trans env e2 (fun arg ->
+          if function_returns_prob e1 then
+            let x = Util.fresh_var "_rev_arg" in
+            let cont = node (Fun (x, kappa (node (Var x)))) in
+            node (FuncApp (node (FuncApp (f, arg)), cont))
+          else
+            kappa (node (FuncApp (f, arg)))))
+  | Cons (e1, e2) ->
+      prob_trans env e1 (fun v1 ->
+        prob_trans env e2 (fun v2 -> kappa (node (Cons (v1, v2)))))
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      prob_trans env e1 (fun v_match ->
+        node
+          (MatchList
+             ( v_match
+             , prob_trans env e_nil kappa
+             , y
+             , ys
+             , prob_trans (StringSet.add y (StringSet.add ys env)) e_cons kappa )))
+
+  | Ref e1 ->
+      prob_trans env e1 (fun v -> kappa (ref_ v))
+  | Deref e1 ->
+      prob_trans env e1 (fun v -> kappa (deref v))
+  | Assign (e1, e2) ->
+      prob_trans env e1 (fun v1 ->
+        prob_trans env e2 (fun v2 -> kappa (assign v1 v2)))
+
+  | Cdf _ | CdfExpr _ ->
+      unsupported "reverse differentiation of CDF expressions is not implemented yet"
+  | Sample _ ->
+      unsupported "continuous Sample remained in program; run discretization before reverse AD"
+  | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
+  | SpecialFunc _ | RuntimeError _ ->
+      kappa (value env te)
+  | Reset _ | Shift _ ->
+      unsupported "shift/reset are internal reverse-AD constructs"
 
 let diff_var = "theta"
 
 let bind_input name body =
   node (Let (name, reverse_float (node (Var name)), body))
 
-let bind_diff_input body =
-  bind_input diff_var body
+let bind_inputs seeds body =
+  StringMap.fold
+    (fun name _ acc -> bind_input name acc)
+    seeds
+    body
 
-let diff_gradient () =
-  adjoint_value (node (Var diff_var))
+let default_seeds =
+  seeds_of_param diff_var
+
+let resolve_seeds ?param ?seeds () =
+  match seeds, param with
+  | Some seeds, _ -> seeds
+  | None, Some param -> seeds_of_param param
+  | None, None -> default_seeds
+
+let seed_names seeds =
+  StringMap.fold (fun name _ acc -> StringSet.add name acc) seeds StringSet.empty
+
+let seed_gradient seeds =
+  StringMap.fold
+    (fun name seed acc ->
+       if seed = 0.0 then acc
+       else
+         add acc
+           (mul
+              (const seed)
+              (adjoint_value (node (Var name)))))
+    seeds
+    zero
 
 let objective result_ref ty zhat =
   match Ast.force ty with
@@ -342,6 +532,21 @@ let objective_cont result_ref ty zhat =
   else
     objective result_ref ty zhat
 
+let expectation_value ty v =
+  match Ast.force ty with
+  | TFloat _ -> v
+  | TBool ->
+      reverse_float (node (If (v, one, zero)))
+  | _ ->
+      unsupported "top-level reverse AD expectation must be float- or bool-valued"
+
+let seed_float_objective result_ref zhat =
+  bind_rev "_rev_zhat" zhat (fun zhat ->
+    sequence
+      [ assign result_ref (primal zhat)
+      ; assign (adjoint zhat) one
+      ])
+
 exception Cannot_interpret_reverse of string
 
 type sym_value =
@@ -350,6 +555,7 @@ type sym_value =
   | SClosure of string * expr * sym_env
   | SRecClosure of string * string * expr * sym_env
   | SRef of sym_value ref
+  | SCont of (sym_value -> sym_value)
   | SUnit
   | SNil
   | SCons of sym_value * sym_value
@@ -372,6 +578,8 @@ let rec sym_expr = function
   | SRecClosure (f, x, body, []) -> node (Fix (f, x, body))
   | SRecClosure _ ->
       raise (Cannot_interpret_reverse "cannot reify recursive closure with captured environment")
+  | SCont _ ->
+      raise (Cannot_interpret_reverse "cannot reify captured continuation")
 
 let sym_bool = function
   | SExpr (ExprNode (BoolConst b)) -> Some b
@@ -385,135 +593,160 @@ let rec sym_sample env = function
   | Distr2 (kind, e1, e2) ->
       Distr2 (kind, sym_expr (sym_eval env e1), sym_expr (sym_eval env e2))
 
-and sym_eval env (ExprNode e) =
+and sym_eval env e =
+  sym_eval_cps env e (fun v -> v)
+
+and sym_eval_cps env (ExprNode e) k =
   match e with
-  | Const f -> SExpr (const f)
-  | BoolConst b -> SExpr (bool b)
-  | Var x -> sym_lookup x env
+  | Const f -> k (SExpr (const f))
+  | BoolConst b -> k (SExpr (bool b))
+  | Var x -> k (sym_lookup x env)
   | Let (x, e1, e2) ->
-      let v1 = sym_eval env e1 in
-      sym_eval ((x, v1) :: env) e2
-  | Pair (e1, e2) -> SPair (sym_eval env e1, sym_eval env e2)
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps ((x, v1) :: env) e2 k)
+  | Pair (e1, e2) ->
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 -> k (SPair (v1, v2))))
   | First e1 ->
-      (match sym_eval env e1 with
-       | SPair (v1, _) -> v1
-       | v -> SExpr (first (sym_expr v)))
+      sym_eval_cps env e1 (function
+        | SPair (v1, _) -> k v1
+        | v -> k (SExpr (first (sym_expr v))))
   | Second e1 ->
-      (match sym_eval env e1 with
-       | SPair (_, v2) -> v2
-       | v -> SExpr (second (sym_expr v)))
-  | Ref e1 -> SRef (ref (sym_eval env e1))
+      sym_eval_cps env e1 (function
+        | SPair (_, v2) -> k v2
+        | v -> k (SExpr (second (sym_expr v))))
+  | Ref e1 ->
+      sym_eval_cps env e1 (fun v -> k (SRef (ref v)))
   | Deref e1 ->
-      (match sym_eval env e1 with
-       | SRef r -> !r
-       | v -> SExpr (deref (sym_expr v)))
+      sym_eval_cps env e1 (function
+        | SRef r -> k !r
+        | v -> k (SExpr (deref (sym_expr v))))
   | Assign (e1, e2) ->
-      (match sym_eval env e1 with
-       | SRef r ->
-           r := sym_eval env e2;
-           SUnit
-       | _ ->
-           raise (Cannot_interpret_reverse "assignment target is not a ref"))
+      sym_eval_cps env e1 (fun v_ref ->
+        sym_eval_cps env e2 (fun v_val ->
+          match v_ref with
+          | SRef r ->
+              r := v_val;
+              k SUnit
+          | _ ->
+              raise (Cannot_interpret_reverse "assignment target is not a ref")))
   | Seq (e1, e2) ->
-      let _ = sym_eval env e1 in
-      sym_eval env e2
-  | Add (e1, e2) -> sym_arith add (sym_eval env e1) (sym_eval env e2)
-  | Sub (e1, e2) -> sym_arith sub (sym_eval env e1) (sym_eval env e2)
-  | Mul (e1, e2) -> sym_arith mul (sym_eval env e1) (sym_eval env e2)
-  | Div (e1, e2) -> sym_arith div (sym_eval env e1) (sym_eval env e2)
+      sym_eval_cps env e1 (fun _ -> sym_eval_cps env e2 k)
+  | Add (e1, e2) ->
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 -> k (sym_arith add v1 v2)))
+  | Sub (e1, e2) ->
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 -> k (sym_arith sub v1 v2)))
+  | Mul (e1, e2) ->
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 -> k (sym_arith mul v1 v2)))
+  | Div (e1, e2) ->
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 -> k (sym_arith div v1 v2)))
   | SpecialFunc (name, args) ->
-      SExpr (special name (List.map (fun e -> sym_expr (sym_eval env e)) args))
+      let rec eval_args acc = function
+        | [] -> k (SExpr (special name (List.rev_map sym_expr acc)))
+        | arg :: rest ->
+            sym_eval_cps env arg (fun v -> eval_args (v :: acc) rest)
+      in
+      eval_args [] args
   | Cmp (op, e1, e2, flipped) ->
-      SExpr
-        (Simplify.expr
-           (node (Cmp (op, sym_expr (sym_eval env e1), sym_expr (sym_eval env e2), flipped))))
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 ->
+          k
+            (SExpr
+               (Simplify.expr
+                  (node (Cmp (op, sym_expr v1, sym_expr v2, flipped)))))))
   | FinCmp (op, e1, e2, n, flipped) ->
-      SExpr
-        (Simplify.expr
-           (node
-              (FinCmp
-                 ( op
-                 , sym_expr (sym_eval env e1)
-                 , sym_expr (sym_eval env e2)
-                 , n
-                 , flipped ))))
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 ->
+          k
+            (SExpr
+               (Simplify.expr
+                  (node (FinCmp (op, sym_expr v1, sym_expr v2, n, flipped)))))))
   | FinEq (e1, e2, n) ->
-      SExpr
-        (Simplify.expr
-           (node
-              (FinEq
-                 ( sym_expr (sym_eval env e1)
-                 , sym_expr (sym_eval env e2)
-                 , n ))))
+      sym_eval_cps env e1 (fun v1 ->
+        sym_eval_cps env e2 (fun v2 ->
+          k
+            (SExpr
+               (Simplify.expr
+                  (node (FinEq (sym_expr v1, sym_expr v2, n)))))))
   | And (e1, e2) ->
-      let v1 = sym_eval env e1 in
-      (match sym_bool v1 with
-       | Some false -> SExpr (bool false)
-       | Some true -> sym_eval env e2
-       | None ->
-           SExpr
-             (node
-                (And
-                   ( sym_expr v1
-                   , sym_expr (sym_eval env e2) ))))
+      sym_eval_cps env e1 (fun v1 ->
+        match sym_bool v1 with
+        | Some false -> k (SExpr (bool false))
+        | Some true -> sym_eval_cps env e2 k
+        | None ->
+            sym_eval_cps env e2 (fun v2 ->
+              k (SExpr (node (And (sym_expr v1, sym_expr v2))))))
   | Or (e1, e2) ->
-      let v1 = sym_eval env e1 in
-      (match sym_bool v1 with
-       | Some true -> SExpr (bool true)
-       | Some false -> sym_eval env e2
-       | None ->
-           SExpr
-             (node
-                (Or
-                   ( sym_expr v1
-                   , sym_expr (sym_eval env e2) ))))
+      sym_eval_cps env e1 (fun v1 ->
+        match sym_bool v1 with
+        | Some true -> k (SExpr (bool true))
+        | Some false -> sym_eval_cps env e2 k
+        | None ->
+            sym_eval_cps env e2 (fun v2 ->
+              k (SExpr (node (Or (sym_expr v1, sym_expr v2))))))
   | Not e1 ->
-      let v1 = sym_eval env e1 in
-      (match sym_bool v1 with
-       | Some b -> SExpr (bool (not b))
-       | None -> SExpr (node (Not (sym_expr v1))))
+      sym_eval_cps env e1 (fun v1 ->
+        match sym_bool v1 with
+        | Some b -> k (SExpr (bool (not b)))
+        | None -> k (SExpr (node (Not (sym_expr v1)))))
   | If (e1, e2, e3) ->
-      (match sym_bool (sym_eval env e1) with
-       | Some true -> sym_eval env e2
-       | Some false -> sym_eval env e3
-       | None ->
-           raise
-             (Cannot_interpret_reverse
-                "cannot choose a branch for a symbolic reverse conditional"))
-  | Fun (x, e1) -> SClosure (x, e1, env)
+      sym_eval_cps env e1 (fun v_cond ->
+        match sym_bool v_cond with
+        | Some true -> sym_eval_cps env e2 k
+        | Some false -> sym_eval_cps env e3 k
+        | None ->
+            raise
+              (Cannot_interpret_reverse
+                 "cannot choose a branch for a symbolic reverse conditional"))
+  | Fun (x, e1) -> k (SClosure (x, e1, env))
   | FuncApp (e1, e2) ->
-      let f = sym_eval env e1 in
-      let arg = sym_eval env e2 in
-      (match f with
-       | SClosure (x, body, captured_env) ->
-           sym_eval ((x, arg) :: captured_env) body
-       | SRecClosure (f_name, x, body, captured_env) ->
-           sym_eval ((x, arg) :: (f_name, f) :: captured_env) body
-       | _ -> SExpr (node (FuncApp (sym_expr f, sym_expr arg))))
-  | Fix (f, x, e1) -> SRecClosure (f, x, e1, env)
-  | FinConst (k, n) -> SExpr (node (FinConst (k, n)))
+      sym_eval_cps env e1 (fun f ->
+        sym_eval_cps env e2 (fun arg ->
+          match f with
+          | SClosure (x, body, captured_env) ->
+              sym_eval_cps ((x, arg) :: captured_env) body k
+          | SRecClosure (f_name, x, body, captured_env) ->
+              sym_eval_cps ((x, arg) :: (f_name, f) :: captured_env) body k
+          | SCont captured ->
+              k (captured arg)
+          | _ -> k (SExpr (node (FuncApp (sym_expr f, sym_expr arg))))))
+  | Fix (f, x, e1) -> k (SRecClosure (f, x, e1, env))
+  | FinConst (i, n) -> k (SExpr (node (FinConst (i, n))))
   | Observe e1 ->
-      (match sym_bool (sym_eval env e1) with
-       | Some true -> SUnit
-       | Some false -> raise (Cannot_interpret_reverse "observe failed")
-       | None -> raise (Cannot_interpret_reverse "symbolic observe"))
-  | Nil -> SNil
-  | Cons (e1, e2) -> SCons (sym_eval env e1, sym_eval env e2)
+      sym_eval_cps env e1 (fun v1 ->
+        match sym_bool v1 with
+        | Some true -> k SUnit
+        | Some false -> raise (Cannot_interpret_reverse "observe failed")
+        | None -> raise (Cannot_interpret_reverse "symbolic observe"))
+  | Nil -> k SNil
+  | Cons (e1, e2) ->
+      sym_eval_cps env e1 (fun v_hd ->
+        sym_eval_cps env e2 (fun v_tl -> k (SCons (v_hd, v_tl))))
   | MatchList (e1, e_nil, y, ys, e_cons) ->
-      (match sym_eval env e1 with
-       | SNil -> sym_eval env e_nil
-       | SCons (v_hd, v_tl) -> sym_eval ((y, v_hd) :: (ys, v_tl) :: env) e_cons
-       | _ -> raise (Cannot_interpret_reverse "symbolic list match"))
-  | Unit -> SUnit
+      sym_eval_cps env e1 (function
+        | SNil -> sym_eval_cps env e_nil k
+        | SCons (v_hd, v_tl) ->
+            sym_eval_cps ((y, v_hd) :: (ys, v_tl) :: env) e_cons k
+        | _ -> raise (Cannot_interpret_reverse "symbolic list match"))
+  | Unit -> k SUnit
   | RuntimeError msg -> raise (Cannot_interpret_reverse msg)
+  | Reset e1 ->
+      let v = sym_eval_cps env e1 (fun v -> v) in
+      k v
+  | Shift (cont_name, body) ->
+      sym_eval_cps ((cont_name, SCont k) :: env) body (fun v -> v)
   | Cdf (dist, point) ->
-      SExpr (node (Cdf (sym_sample env dist, sym_expr (sym_eval env point))))
+      sym_eval_cps env point (fun v_point ->
+        k (SExpr (node (Cdf (sym_sample env dist, sym_expr v_point)))))
   | CdfExpr (kernel, point) ->
-      SExpr
-        (node
-           (CdfExpr
-              ( sym_expr (sym_eval env kernel)
-              , sym_expr (sym_eval env point) )))
+      sym_eval_cps env kernel (fun v_kernel ->
+        sym_eval_cps env point (fun v_point ->
+          let e = node (CdfExpr (sym_expr v_kernel, sym_expr v_point)) in
+          k (SExpr e)))
   | Sample _ ->
       raise (Cannot_interpret_reverse "sample")
   | DiscreteCase _ ->
@@ -528,22 +761,259 @@ let interpret_effects_or_original e =
   | Some e' -> e'
   | None -> e
 
+(* Removes `reset` and `shift` by reifying the captured continuation as a
+   straight-line reverse schedule.
+
+   The important Wang ordering is preserved at each shift site:
+
+     forward node;
+     captured continuation;
+     local backprop
+
+   A control-free let RHS is kept as an ordinary let instead of being lowered in
+   CPS.  That keeps terms such as [let bhat = if ... then ... else ...] in a
+   compact ANF/tape shape instead of duplicating the whole continuation into
+   both branches. *)
+let lower_shift_reset e =
+  let rec lower_sample = function
+    | Distr1 (kind, e1) -> Distr1 (kind, lower_expr e1)
+    | Distr2 (kind, e1, e2) -> Distr2 (kind, lower_expr e1, lower_expr e2)
+
+  and contains_control (ExprNode e) =
+    match e with
+    | Reset _ | Shift _ -> true
+    | Var _ | Const _ | BoolConst _ | FinConst _ | Nil | Unit
+    | RuntimeError _ -> false
+    | Let (_, e1, e2) | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2)
+    | Div (e1, e2) | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _)
+    | FinEq (e1, e2, _) | And (e1, e2) | Or (e1, e2) | Pair (e1, e2)
+    | FuncApp (e1, e2) | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2)
+    | CdfExpr (e1, e2) ->
+        contains_control e1 || contains_control e2
+    | If (e1, e2, e3) ->
+        contains_control e1 || contains_control e2 || contains_control e3
+    | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1
+    | Fun (_, e1) | Fix (_, _, e1) ->
+        contains_control e1
+    | MatchList (e1, e_nil, _, _, e_cons) ->
+        contains_control e1 || contains_control e_nil || contains_control e_cons
+    | Sample d -> contains_control_sample d
+    | Cdf (d, point) -> contains_control_sample d || contains_control point
+    | DiscreteCase cases ->
+        List.exists
+          (fun (branch, prob) -> contains_control branch || contains_control prob)
+          cases
+    | SpecialFunc (_, args) -> List.exists contains_control args
+
+  and contains_control_sample = function
+    | Distr1 (_, e1) -> contains_control e1
+    | Distr2 (_, e1, e2) -> contains_control e1 || contains_control e2
+
+  and lower_expr (ExprNode e) =
+    match e with
+    | Var x -> node (Var x)
+    | Const f -> const f
+    | BoolConst b -> bool b
+    | Let (x, e1, e2) -> node (Let (x, lower_expr e1, lower_expr e2))
+    | Sample d -> node (Sample (lower_sample d))
+    | DiscreteCase cases ->
+        node
+          (DiscreteCase
+             (List.map
+                (fun (branch, prob) -> (lower_expr branch, lower_expr prob))
+                cases))
+    | Cmp (op, e1, e2, flipped) ->
+        node (Cmp (op, lower_expr e1, lower_expr e2, flipped))
+    | And (e1, e2) -> node (And (lower_expr e1, lower_expr e2))
+    | Or (e1, e2) -> node (Or (lower_expr e1, lower_expr e2))
+    | Not e1 -> node (Not (lower_expr e1))
+    | If (e1, e2, e3) ->
+        node (If (lower_expr e1, lower_expr e2, lower_expr e3))
+    | Pair (e1, e2) -> pair (lower_expr e1) (lower_expr e2)
+    | First e1 -> first (lower_expr e1)
+    | Second e1 -> second (lower_expr e1)
+    | Fun (x, e1) -> node (Fun (x, lower_expr e1))
+    | FuncApp (e1, e2) -> node (FuncApp (lower_expr e1, lower_expr e2))
+    | FinConst (k, n) -> node (FinConst (k, n))
+    | FinCmp (op, e1, e2, n, flipped) ->
+        node (FinCmp (op, lower_expr e1, lower_expr e2, n, flipped))
+    | FinEq (e1, e2, n) -> node (FinEq (lower_expr e1, lower_expr e2, n))
+    | Observe e1 -> node (Observe (lower_expr e1))
+    | Fix (f, x, e1) -> node (Fix (f, x, lower_expr e1))
+    | Nil -> node Nil
+    | Cons (e1, e2) -> node (Cons (lower_expr e1, lower_expr e2))
+    | MatchList (e1, e_nil, y, ys, e_cons) ->
+        node
+          (MatchList
+             ( lower_expr e1
+             , lower_expr e_nil
+             , y
+             , ys
+             , lower_expr e_cons ))
+    | Ref e1 -> ref_ (lower_expr e1)
+    | Deref e1 -> deref (lower_expr e1)
+    | Assign (e1, e2) -> assign (lower_expr e1) (lower_expr e2)
+    | Seq (e1, e2) -> seq (lower_expr e1) (lower_expr e2)
+    | Unit -> unit_
+    | RuntimeError msg -> node (RuntimeError msg)
+    | Reset e1 -> lower_reset e1
+    | Shift (k, e1) -> node (Shift (k, lower_expr e1))
+    | Add (e1, e2) -> add (lower_expr e1) (lower_expr e2)
+    | Sub (e1, e2) -> sub (lower_expr e1) (lower_expr e2)
+    | Mul (e1, e2) -> mul (lower_expr e1) (lower_expr e2)
+    | Div (e1, e2) -> div (lower_expr e1) (lower_expr e2)
+    | SpecialFunc (name, args) -> special name (List.map lower_expr args)
+    | Cdf (d, e1) -> node (Cdf (lower_sample d, lower_expr e1))
+    | CdfExpr (kernel, point) ->
+        node (CdfExpr (lower_expr kernel, lower_expr point))
+
+  and lower_reset e =
+    lower_cps StringMap.empty e (fun v -> v)
+
+  and lower_cps conts (ExprNode e) k =
+    match e with
+    | Reset e1 -> k (lower_reset e1)
+    | Shift (cont_name, body) ->
+        lower_cps (StringMap.add cont_name k conts) body (fun v -> v)
+
+    | Let (x, e1, e2) when not (contains_control e1) ->
+        node (Let (x, lower_expr e1, lower_cps conts e2 k))
+    | Let (x, e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          node (Let (x, v1, lower_cps conts e2 k)))
+    | Seq (e1, e2) ->
+        lower_cps conts e1 (fun _ -> lower_cps conts e2 k)
+    | If (e1, e2, e3) ->
+        lower_cps conts e1 (fun cond ->
+          node
+            (If
+               ( cond
+               , lower_cps conts e2 k
+               , lower_cps conts e3 k )))
+    | MatchList (e1, e_nil, y, ys, e_cons) ->
+        lower_cps conts e1 (fun scrutinee ->
+          node
+            (MatchList
+               ( scrutinee
+               , lower_cps conts e_nil k
+               , y
+               , ys
+               , lower_cps conts e_cons k )))
+    | And (e1, e2) ->
+        lower_cps conts e1 (fun b1 ->
+          node (If (b1, lower_cps conts e2 k, k (bool false))))
+    | Or (e1, e2) ->
+        lower_cps conts e1 (fun b1 ->
+          node (If (b1, k (bool true), lower_cps conts e2 k)))
+
+    | FuncApp (ExprNode (Var cont_name), arg) ->
+        (match StringMap.find_opt cont_name conts with
+         | Some captured ->
+             lower_cps conts arg (fun arg_value ->
+               lower_cps conts (captured arg_value) k)
+         | None ->
+             lower_cps conts arg (fun arg_value ->
+               k (node (FuncApp (node (Var cont_name), arg_value)))))
+    | FuncApp (e1, e2) ->
+        lower_cps conts e1 (fun f ->
+          lower_cps conts e2 (fun arg -> k (node (FuncApp (f, arg)))))
+
+    | Pair (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (pair v1 v2)))
+    | First e1 -> lower_cps conts e1 (fun v -> k (first v))
+    | Second e1 -> lower_cps conts e1 (fun v -> k (second v))
+    | Not e1 -> lower_cps conts e1 (fun v -> k (node (Not v)))
+    | Observe e1 ->
+        lower_cps conts e1 (fun v -> seq (node (Observe v)) (k unit_))
+    | Ref e1 -> lower_cps conts e1 (fun v -> k (ref_ v))
+    | Deref e1 -> lower_cps conts e1 (fun v -> k (deref v))
+
+    | Assign (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> seq (assign v1 v2) (k unit_)))
+    | Add (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (add v1 v2)))
+    | Sub (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (sub v1 v2)))
+    | Mul (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (mul v1 v2)))
+    | Div (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (div v1 v2)))
+    | Cmp (op, e1, e2, flipped) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (node (Cmp (op, v1, v2, flipped)))))
+    | FinCmp (op, e1, e2, n, flipped) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 ->
+            k (node (FinCmp (op, v1, v2, n, flipped)))))
+    | FinEq (e1, e2, n) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (node (FinEq (v1, v2, n)))))
+    | Cons (e1, e2) ->
+        lower_cps conts e1 (fun v1 ->
+          lower_cps conts e2 (fun v2 -> k (node (Cons (v1, v2)))))
+
+    | Fun (x, e1) -> k (node (Fun (x, lower_expr e1)))
+    | Fix (f, x, e1) -> k (node (Fix (f, x, lower_expr e1)))
+    | Sample d -> k (node (Sample (lower_sample d)))
+    | DiscreteCase cases ->
+        k
+          (node
+             (DiscreteCase
+                (List.map
+                   (fun (branch, prob) -> (lower_expr branch, lower_expr prob))
+                   cases)))
+    | SpecialFunc (name, args) ->
+        let rec lower_args acc = function
+          | [] -> k (special name (List.rev acc))
+          | arg :: rest ->
+              lower_cps conts arg (fun v -> lower_args (v :: acc) rest)
+        in
+        lower_args [] args
+    | Cdf (d, e1) ->
+        lower_cps conts e1 (fun point -> k (node (Cdf (lower_sample d, point))))
+    | CdfExpr (kernel, point) ->
+        lower_cps conts kernel (fun kernel' ->
+          lower_cps conts point (fun point' ->
+            k (node (CdfExpr (kernel', point')))))
+
+    | Var x -> k (node (Var x))
+    | Const f -> k (const f)
+    | BoolConst b -> k (bool b)
+    | FinConst (i, n) -> k (node (FinConst (i, n)))
+    | Nil -> k (node Nil)
+    | Unit -> k unit_
+    | RuntimeError msg -> k (node (RuntimeError msg))
+  in
+  lower_expr e
+
 let dual_expectation_raw ?param ?seeds te =
-  let _ = param, seeds in
-  if effect_of te = Prob then
-    unsupported "probabilistic reverse AD is not implemented yet";
+  let seeds = resolve_seeds ?param ?seeds () in
   let result = Util.fresh_var "_rev_result" in
   let result_ref = node (Var result) in
   let ty, _, _ = te in
-  let env = StringSet.singleton diff_var in
-  bind_diff_input
+  let env = seed_names seeds in
+  let transformed =
+    match effect_of te with
+    | Prob ->
+        prob_trans env te (expectation_value ty)
+        |> seed_float_objective result_ref
+    | Pure | EMeta _ ->
+        trans env te (objective_cont result_ref ty)
+  in
+  bind_inputs seeds
     (node
        (Let
           ( result
           , ref_ zero
           , sequence
-              [ trans env te (objective_cont result_ref ty)
-              ; pair (deref result_ref) (diff_gradient ())
+              [ reset transformed
+              ; pair (deref result_ref) (seed_gradient seeds)
               ] )))
 
 let gradient_raw ?param ?seeds te =

@@ -41,6 +41,16 @@ let adev_dual_raw_after_discretize source =
   let texpr = Slice.Inference.infer transformed in
   Slice.Adev.dual_expectation_raw texpr
 
+let reverse_dual_after_discretize source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Reverse.dual_expectation texpr
+
+let reverse_dual_raw_after_discretize source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Reverse.dual_expectation_raw texpr
+
 let adev_dual_after_discretize_at param value source =
   let transformed = transform_at param value source in
   let texpr = Slice.Inference.infer transformed in
@@ -562,6 +572,42 @@ let test_reverse_multiple_explicit_unit_seeds _ =
     0.7
     tangent
 
+let test_reverse_enumerates_direct_discrete_comparison _ =
+  let dual = reverse_dual_after_discretize "discrete(theta, 1 - theta) <#2 1#2" in
+  let primal, tangent = eval_dual_with_theta 0.3 dual in
+  assert_close 0.3 primal;
+  assert_close 1.0 tangent
+
+let test_reverse_discrete_includes_probability_and_body_derivatives _ =
+  let source =
+    "let x = discrete(theta, 1 - theta) in if x <#2 1#2 then theta else 0"
+  in
+  let raw = reverse_dual_raw_after_discretize source in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw reverse program should bind transformed discrete probabilities"
+    (contains_substring raw_plain "_rev_phat");
+  assert_bool "raw reverse program should bind transformed discrete continuations"
+    (contains_substring raw_plain "_rev_bhat");
+  assert_bool "raw reverse program should bind weighted discrete arms"
+    (contains_substring raw_plain "_rev_chat");
+  assert_bool "raw reverse program should use shift"
+    (contains_substring raw_plain "shift");
+  assert_bool "raw reverse program should use reset"
+    (contains_substring raw_plain "reset");
+  assert_substring_order raw_plain "_rev_phat" "_rev_bhat";
+  assert_substring_order raw_plain "_rev_bhat" "_rev_chat";
+  let lowered_plain =
+    Slice.Pretty.string_of_expr_plain (Slice.Reverse.lower_shift_reset raw)
+  in
+  assert_bool "lowered reverse program should eliminate shift"
+    (not (contains_substring lowered_plain "shift"));
+  assert_bool "lowered reverse program should eliminate reset"
+    (not (contains_substring lowered_plain "reset"));
+  let dual = Slice.Reverse.dual_expectation (Slice.Inference.infer (transform source)) in
+  let primal, tangent = eval_dual_with_theta 0.3 dual in
+  assert_close 0.09 primal;
+  assert_close 0.6 tangent
+
 let test_adev_multiple_explicit_unit_seeds _ =
   let dual =
     adev_dual_with_seeds
@@ -809,6 +855,8 @@ let suite =
   ; "test_adev_allows_one_seed_for_multiple_free_float_variables" >:: test_adev_allows_one_seed_for_multiple_free_float_variables
   ; "test_adev_explicit_seed_for_non_theta_variable" >:: test_adev_explicit_seed_for_non_theta_variable
   ; "test_reverse_multiple_explicit_unit_seeds" >:: test_reverse_multiple_explicit_unit_seeds
+  ; "test_reverse_enumerates_direct_discrete_comparison" >:: test_reverse_enumerates_direct_discrete_comparison
+  ; "test_reverse_discrete_includes_probability_and_body_derivatives" >:: test_reverse_discrete_includes_probability_and_body_derivatives
   ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference

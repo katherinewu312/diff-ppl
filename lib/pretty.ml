@@ -110,6 +110,8 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | Seq (e1, e2) -> Printf.sprintf "(%s; %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Unit -> "()"
   | RuntimeError s -> Printf.sprintf "RUNTIME_ERROR(\"%s\")" s
+  | Reset e1 -> Printf.sprintf "reset <%s>" (string_of_expr_plain e1)
+  | Shift (k, e1) -> Printf.sprintf "shift %s in %s" k (string_of_expr_plain e1)
   | Add (e1, e2) -> Printf.sprintf "(%s + %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Sub (e1, e2) -> Printf.sprintf "(%s - %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
   | Mul (e1, e2) -> Printf.sprintf "(%s * %s)" (string_of_expr_plain e1) (string_of_expr_plain e2)
@@ -273,6 +275,13 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
         (string_of_expr_indented ~indent e1) operator_color reset_color (string_of_expr_indented ~indent e2)
   | Unit -> Printf.sprintf "%s()%s" keyword_color reset_color
   | RuntimeError s -> Printf.sprintf "%sRUNTIME_ERROR%s(\"%s%s%s\")" operator_color reset_color variable_color s reset_color
+  | Reset e1 ->
+      Printf.sprintf "%sreset%s <%s>"
+        keyword_color reset_color (string_of_expr_indented ~indent:(indent+2) e1)
+  | Shift (k, e1) ->
+      Printf.sprintf "%sshift%s %s%s%s %sin%s %s"
+        keyword_color reset_color variable_color k reset_color
+        keyword_color reset_color (string_of_expr_indented ~indent:(indent+2) e1)
   | Add (e1, e2) ->
       Printf.sprintf "(%s %s+%s %s)"
         (string_of_expr_indented ~indent e1) operator_color reset_color (string_of_expr_indented ~indent e2)
@@ -434,6 +443,13 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
         (string_of_texpr_indented ~indent te1) operator_color reset_color (string_of_texpr_indented ~indent te2)
   | Unit -> Printf.sprintf "%s()%s" keyword_color reset_color
   | RuntimeError s -> Printf.sprintf "%sRUNTIME_ERROR%s(\"%s%s%s\")" operator_color reset_color variable_color s reset_color
+  | Reset te1 ->
+      Printf.sprintf "%sreset%s <%s>"
+        keyword_color reset_color (string_of_texpr_indented ~indent:(indent+2) te1)
+  | Shift (k, te1) ->
+      Printf.sprintf "%sshift%s %s%s%s %sin%s %s"
+        keyword_color reset_color variable_color k reset_color
+        keyword_color reset_color (string_of_texpr_indented ~indent:(indent+2) te1)
   | Add (te1, te2) ->
       Printf.sprintf "(%s %s+%s %s)"
         (string_of_texpr_indented ~indent te1) operator_color reset_color (string_of_texpr_indented ~indent te2)

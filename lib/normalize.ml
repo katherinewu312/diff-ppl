@@ -119,6 +119,8 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
       contains_sample_env env e1 || contains_sample_env env e2
   | Not e1 | First e1 | Second e1 | Observe e1
   | Ref e1 | Deref e1 -> contains_sample_env env e1
+  | Reset e1 -> contains_sample_env env e1
+  | Shift (_, e1) -> contains_sample_env env e1
   | If (e1, e2, e3) ->
       contains_sample_env env e1 || contains_sample_env env e2 || contains_sample_env env e3
   | Fun (_, e1) | Fix (_, _, e1) -> contains_sample_env env e1
@@ -376,6 +378,8 @@ let rec normalize_env (env : StringSet.t) (e : expr) : expr =
   | Deref e1 -> ExprNode (Deref (normalize_env env e1))
   | Assign (e1, e2) -> ExprNode (Assign (normalize_env env e1, normalize_env env e2))
   | Seq (e1, e2) -> ExprNode (Seq (normalize_env env e1, normalize_env env e2))
+  | Reset e1 -> ExprNode (Reset (normalize_env env e1))
+  | Shift (k, e1) -> ExprNode (Shift (k, normalize_env (StringSet.remove k env) e1))
   | Add (e1, e2) ->
       let e1' = normalize_env env e1 in
       let e2' = normalize_env env e2 in

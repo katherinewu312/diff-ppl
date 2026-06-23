@@ -220,6 +220,9 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
 
   | RuntimeError s -> raise (RuntimeError s)
 
+  | Reset _ | Shift _ ->
+      raise (RuntimeError "shift/reset are internal reverse-AD constructs")
+
   | Add (e1, e2) -> arith_eval env e1 e2 (+.) "Add"
   | Sub (e1, e2) -> arith_eval env e1 e2 (-.) "Sub"
   | Mul (e1, e2) -> arith_eval env e1 e2 ( *. ) "Mul"

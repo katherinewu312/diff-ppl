@@ -27,6 +27,7 @@ type ad_mode =
 
 type ad_output =
   { raw : Slice.Ast.expr
+  ; lowered : Slice.Ast.expr option
   ; simplified : Slice.Ast.expr
   }
 
@@ -129,8 +130,15 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
               ( Slice.Reverse.gradient_raw ?seeds discretized_texpr
               , Slice.Reverse.gradient ?seeds discretized_texpr )
         in
+        let raw = apply_values_raw ad_args.values raw in
+        let lowered =
+          match ad_mode with
+          | Forward -> None
+          | Reverse -> Some (Slice.Reverse.lower_shift_reset raw)
+        in
         Some
-          { raw = apply_values_raw ad_args.values raw
+          { raw
+          ; lowered
           ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
           }
     | AdDual ->
@@ -144,8 +152,15 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
               ( Slice.Reverse.dual_expectation_raw ?seeds discretized_texpr
               , Slice.Reverse.dual_expectation ?seeds discretized_texpr )
         in
+        let raw = apply_values_raw ad_args.values raw in
+        let lowered =
+          match ad_mode with
+          | Forward -> None
+          | Reverse -> Some (Slice.Reverse.lower_shift_reset raw)
+        in
         Some
-          { raw = apply_values_raw ad_args.values raw
+          { raw
+          ; lowered
           ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
           }
   in
@@ -162,7 +177,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     print_section "Discretized program" (Slice.Pretty.string_of_expr transformed);
     (match ad_output with
      | None -> ()
-     | Some { raw; simplified } ->
+     | Some { raw; lowered; simplified } ->
           let ad_name =
             match ad_mode with
             | Forward -> "forward"
@@ -175,6 +190,16 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
             | AdDual -> "Raw " ^ ad_name ^ " AD dual program", "Simplified " ^ ad_name ^ " AD dual program"
           in
          print_section raw_title (Slice.Pretty.string_of_expr raw);
+         (match lowered with
+          | None -> ()
+          | Some lowered ->
+              let lowered_title =
+                match mode with
+                | Discretize -> "Lowered output program"
+                | AdGradient -> "Lowered " ^ ad_name ^ " AD gradient program"
+                | AdDual -> "Lowered " ^ ad_name ^ " AD dual program"
+              in
+              print_section lowered_title (Slice.Pretty.string_of_expr lowered));
          print_section simplified_title (Slice.Pretty.string_of_expr simplified)))
   else
     print_endline output_source

@@ -52,6 +52,8 @@ let rec texpr_to_expr ((_, _, TAExprNode ae) : texpr) : expr =
   | Seq (e1, e2) -> ExprNode (Seq (texpr_to_expr e1, texpr_to_expr e2))
   | Unit -> ExprNode Unit
   | RuntimeError s -> ExprNode (RuntimeError s)
+  | Reset e1 -> ExprNode (Reset (texpr_to_expr e1))
+  | Shift (k, e1) -> ExprNode (Shift (k, texpr_to_expr e1))
   | Add (e1, e2) -> ExprNode (Add (texpr_to_expr e1, texpr_to_expr e2))
   | Sub (e1, e2) -> ExprNode (Sub (texpr_to_expr e1, texpr_to_expr e2))
   | Mul (e1, e2) -> ExprNode (Mul (texpr_to_expr e1, texpr_to_expr e2))
@@ -107,6 +109,8 @@ let rec texpr_contains_sample ((_, _, TAExprNode ae) : texpr) : bool =
       texpr_contains_sample e1 || texpr_contains_sample e2
   | Not e1 | First e1 | Second e1 | Observe e1
   | Ref e1 | Deref e1 -> texpr_contains_sample e1
+  | Reset e1 -> texpr_contains_sample e1
+  | Shift (_, e1) -> texpr_contains_sample e1
   | If (e1, e2, e3) ->
       texpr_contains_sample e1 || texpr_contains_sample e2 || texpr_contains_sample e3
   | Fun (_, e1) | Fix (_, _, e1) -> texpr_contains_sample e1
@@ -638,6 +642,12 @@ let discretize ?cut_order_at (e : texpr) : expr =
     | Unit -> ExprNode Unit
 
     | RuntimeError s -> ExprNode (RuntimeError s)
+
+    | Reset te1 ->
+        ExprNode (Reset (aux te1))
+
+    | Shift (k, te1) ->
+        ExprNode (Shift (k, aux te1))
 
   in
   aux e

@@ -647,6 +647,16 @@ let infer (e : expr) : texpr =
 
     | RuntimeError s -> pure (Ast.fresh_meta ()) (RuntimeError s)
 
+    | Reset e1 ->
+      let t1, eff1, a1 = aux env e1 in
+      mk t1 eff1 (Reset (t1, eff1, a1))
+
+    | Shift (k, e1) ->
+      let cont_type = Ast.fresh_meta () in
+      let env' = StringMap.add k cont_type env in
+      let t1, eff1, a1 = aux env' e1 in
+      mk t1 eff1 (Shift (k, (t1, eff1, a1)))
+
   (* Inference for an arithmetic operation; the result's type is a
      fresh symbolic float whose sym-bag identifies the whole
      [orig_expr]. *)
