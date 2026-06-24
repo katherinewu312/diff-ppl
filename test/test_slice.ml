@@ -89,6 +89,16 @@ let substring_index s needle =
 let contains_substring s needle =
   Option.is_some (substring_index s needle)
 
+let count_substring s needle =
+  let len = String.length s in
+  let n = String.length needle in
+  let rec loop count i =
+    if n = 0 || i + n > len then count
+    else if String.sub s i n = needle then loop (count + 1) (i + n)
+    else loop count (i + 1)
+  in
+  loop 0 0
+
 let assert_substring_order s before after =
   match substring_index s before, substring_index s after with
   | Some i, Some j ->
@@ -601,6 +611,28 @@ let test_reverse_discrete_includes_probability_and_body_derivatives _ =
   assert_close 0.09 primal;
   assert_close 0.6 tangent
 
+let test_reverse_deterministic_let_uses_direct_style _ =
+  let source =
+    "let a0 = theta in \
+     let b0 = if true then 3 else 4 in \
+     let c0 = a0 * b0 in \
+     let a1 = theta in \
+     let b1 = 4 in \
+     let c1 = a1 * b1 in \
+     c1"
+  in
+  let raw = reverse_dual_raw_after_discretize source in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "deterministic let RHS should stay outside duplicated branches"
+    (contains_substring raw_plain "let b0 = if true then");
+  assert_equal
+    ~printer:string_of_int
+    1
+    (count_substring raw_plain "let b0 =");
+  let primal, tangent = eval_dual_with_theta 0.3 (reverse_dual_after_discretize source) in
+  assert_close 1.2 primal;
+  assert_close 4.0 tangent
+
 let test_adev_multiple_explicit_unit_seeds _ =
   let dual =
     adev_dual_with_seeds
@@ -850,6 +882,7 @@ let suite =
   ; "test_reverse_multiple_explicit_unit_seeds" >:: test_reverse_multiple_explicit_unit_seeds
   ; "test_reverse_enumerates_direct_discrete_comparison" >:: test_reverse_enumerates_direct_discrete_comparison
   ; "test_reverse_discrete_includes_probability_and_body_derivatives" >:: test_reverse_discrete_includes_probability_and_body_derivatives
+  ; "test_reverse_deterministic_let_uses_direct_style" >:: test_reverse_deterministic_let_uses_direct_style
   ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference

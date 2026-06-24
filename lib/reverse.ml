@@ -1,9 +1,10 @@
 (* Reverse-mode AD.
 
    Float values are represented as [(primal, adjoint_ref)].  The
-   transformation is continuation-based: local arithmetic nodes call
-   the continuation first, which seeds/propagates adjoints through the
-   rest of the program, then perform their local backprop updates.
+   The deterministic transformation follows Wang-style direct style:
+   it recurses structurally over the source program, and local
+   arithmetic nodes use shift/reset to run the rest of the computation
+   before performing their local backprop updates.
 
    Discrete distributions are handled by exact enumeration in CPS.  The
    branch probabilities and branch continuations are combined with the
@@ -93,47 +94,43 @@ let rec sequence = function
 let apply_cont k yhat =
   node (FuncApp (node (Var k), yhat))
 
-let binary_reverse primal_op back1 back2 yhat1 yhat2 k =
+let binary_reverse primal_op back1 back2 yhat1 yhat2 =
   let cont = Util.fresh_var "_rev_k" in
-  k
-    (shift cont
-       (bind_rev "_rev_yhat"
-          (reverse_float (primal_op (primal yhat1) (primal yhat2)))
-          (fun yhat ->
-             sequence
-               [ apply_cont cont yhat
-               ; add_adjoint yhat1 (back1 yhat yhat1 yhat2)
-               ; add_adjoint yhat2 (back2 yhat yhat1 yhat2)
-               ])))
+  shift cont
+    (bind_rev "_rev_yhat"
+       (reverse_float (primal_op (primal yhat1) (primal yhat2)))
+       (fun yhat ->
+          sequence
+            [ apply_cont cont yhat
+            ; add_adjoint yhat1 (back1 yhat yhat1 yhat2)
+            ; add_adjoint yhat2 (back2 yhat yhat1 yhat2)
+            ]))
 
-let addR yhat1 yhat2 k =
+let addR yhat1 yhat2 =
   binary_reverse
     add
     (fun yhat _ _ -> adjoint_value yhat)
     (fun yhat _ _ -> adjoint_value yhat)
     yhat1
     yhat2
-    k
 
-let subR yhat1 yhat2 k =
+let subR yhat1 yhat2 =
   binary_reverse
     sub
     (fun yhat _ _ -> adjoint_value yhat)
     (fun yhat _ _ -> sub zero (adjoint_value yhat))
     yhat1
     yhat2
-    k
 
-let mulR yhat1 yhat2 k =
+let mulR yhat1 yhat2 =
   binary_reverse
     mul
     (fun yhat _ yhat2 -> mul (adjoint_value yhat) (primal yhat2))
     (fun yhat yhat1 _ -> mul (adjoint_value yhat) (primal yhat1))
     yhat1
     yhat2
-    k
 
-let divR yhat1 yhat2 k =
+let divR yhat1 yhat2 =
   binary_reverse
     div
     (fun yhat _ yhat2 -> div (adjoint_value yhat) (primal yhat2))
@@ -144,14 +141,13 @@ let divR yhat1 yhat2 k =
             (mul (primal yhat2) (primal yhat2))))
     yhat1
     yhat2
-    k
 
 let rec sumR = function
   | [] -> reverse_float zero
   | [yhat] -> yhat
   | yhat :: rest ->
       bind_rev "_rev_sum" (sumR rest) (fun rest_yhat ->
-        addR yhat rest_yhat (fun sum_yhat -> sum_yhat))
+        addR yhat rest_yhat)
 
 let rec sample_value env = function
   | Distr1 (kind, e1) -> Distr1 (kind, primal (value env e1))
@@ -217,7 +213,7 @@ and value env (ty, _, TAExprNode ae) =
                     , prob_trans (StringSet.add x env) e1
                         (fun v -> node (FuncApp (node (Var k), v))) )) ))
       else
-        node (Fun (x, trans (StringSet.add x env) e1 (fun v -> v)))
+        node (Fun (x, trans (StringSet.add x env) e1))
   | FuncApp (e1, e2) ->
       node (FuncApp (value env e1, value env e2))
   | Fix (f, x, e1) ->
@@ -225,7 +221,7 @@ and value env (ty, _, TAExprNode ae) =
         (Fix
            ( f
            , x
-           , trans (StringSet.add f (StringSet.add x env)) e1 (fun v -> v) ))
+           , trans (StringSet.add f (StringSet.add x env)) e1 ))
   | FinConst (k, n) -> node (FinConst (k, n))
   | Observe e1 -> node (Observe (value env e1))
   | Nil -> node Nil
@@ -257,89 +253,72 @@ and value env (ty, _, TAExprNode ae) =
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
 
-and trans env ((_, _, TAExprNode ae) as te) k =
+and trans env ((_, _, TAExprNode ae) as te) =
   match ae with
   | Add (e1, e2) ->
-      trans env e1 (fun yhat1_raw ->
-        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          trans env e2 (fun yhat2_raw ->
-            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              addR yhat1 yhat2 k))))
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+          addR yhat1 yhat2))
   | Sub (e1, e2) ->
-      trans env e1 (fun yhat1_raw ->
-        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          trans env e2 (fun yhat2_raw ->
-            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              subR yhat1 yhat2 k))))
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+          subR yhat1 yhat2))
   | Mul (e1, e2) ->
-      trans env e1 (fun yhat1_raw ->
-        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          trans env e2 (fun yhat2_raw ->
-            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              mulR yhat1 yhat2 k))))
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+          mulR yhat1 yhat2))
   | Div (e1, e2) ->
-      trans env e1 (fun yhat1_raw ->
-        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          trans env e2 (fun yhat2_raw ->
-            bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              divR yhat1 yhat2 k))))
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+          divR yhat1 yhat2))
   | SpecialFunc ("sqrt", [e1]) ->
-      trans env e1 (fun yhat1_raw ->
-        bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
-          let cont = Util.fresh_var "_rev_k" in
-          k
-            (shift cont
-               (bind_rev "_rev_yhat"
-                  (reverse_float (special "sqrt" [primal yhat1]))
-                  (fun yhat ->
-                     sequence
-                       [ apply_cont cont yhat
-                       ; add_adjoint yhat1
-                           (div
-                              (adjoint_value yhat)
-                              (mul (const 2.0) (primal yhat)))
-                       ])))))
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        let cont = Util.fresh_var "_rev_k" in
+        shift cont
+          (bind_rev "_rev_yhat"
+             (reverse_float (special "sqrt" [primal yhat1]))
+             (fun yhat ->
+                sequence
+                  [ apply_cont cont yhat
+                  ; add_adjoint yhat1
+                      (div
+                         (adjoint_value yhat)
+                         (mul (const 2.0) (primal yhat)))
+                  ])))
   | SpecialFunc (name, _) ->
       unsupported ("reverse differentiation of special function " ^ name ^ " is not implemented")
   | Let (x, e1, e2) ->
-      trans env e1 (fun yhat1 ->
-        node (Let (x, yhat1, trans (StringSet.add x env) e2 k)))
+      node (Let (x, trans env e1, trans (StringSet.add x env) e2))
   | If (e1, e2, e3) ->
-      node (If (value env e1, trans env e2 k, trans env e3 k))
+      node (If (value env e1, trans env e2, trans env e3))
   | Pair (e1, e2) ->
-      trans env e1 (fun yhat1 ->
-        trans env e2 (fun yhat2 -> k (pair yhat1 yhat2)))
+      pair (trans env e1) (trans env e2)
   | First e1 ->
-      trans env e1 (fun yhat1 -> k (first yhat1))
+      first (trans env e1)
   | Second e1 ->
-      trans env e1 (fun yhat1 -> k (second yhat1))
+      second (trans env e1)
   | FuncApp (e1, e2) ->
-      trans env e1 (fun f ->
-        trans env e2 (fun arg ->
-          k (node (FuncApp (f, arg)))))
+      node (FuncApp (trans env e1, trans env e2))
   | Cons (e1, e2) ->
-      trans env e1 (fun yhat1 ->
-        trans env e2 (fun yhat2 -> k (node (Cons (yhat1, yhat2)))))
+      node (Cons (trans env e1, trans env e2))
   | MatchList (e1, e_nil, y, ys, e_cons) ->
-      trans env e1 (fun yhat_match ->
-        node
-          (MatchList
-             ( yhat_match
-             , trans env e_nil k
-             , y
-             , ys
-             , trans (StringSet.add y (StringSet.add ys env)) e_cons k )))
+      node
+        (MatchList
+           ( trans env e1
+           , trans env e_nil
+           , y
+           , ys
+           , trans (StringSet.add y (StringSet.add ys env)) e_cons ))
   | Ref e1 ->
-      trans env e1 (fun yhat1 -> k (ref_ yhat1))
+      ref_ (trans env e1)
   | Deref e1 ->
-      trans env e1 (fun yhat1 -> k (deref yhat1))
+      deref (trans env e1)
   | Assign (e1, e2) ->
-      trans env e1 (fun yhat1 ->
-        trans env e2 (fun yhat2 -> k (assign yhat1 yhat2)))
+      assign (trans env e1) (trans env e2)
   | Seq (e1, e2) ->
-      trans env e1 (fun _ -> trans env e2 k)
+      seq (trans env e1) (trans env e2)
   | Observe e1 ->
-      sequence [node (Observe (value env e1)); k unit_]
+      sequence [node (Observe (value env e1)); unit_]
   | Cdf _ | CdfExpr _ ->
       unsupported "reverse differentiation of CDF expressions is not implemented yet"
   | Sample _ ->
@@ -349,32 +328,40 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | Const _ | BoolConst _ | Var _ | Cmp _ | FinCmp _ | FinEq _
   | And _ | Or _ | Not _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
   | RuntimeError _ ->
-      k (value env te)
+      value env te
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
 
 and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
-  match ae with
+  if not (is_prob_effect (effect_of te)) then
+    bind_rev "_rev_yhat" (trans env te) kappa
+  else
+    match ae with
   | DiscreteCase cases ->
       let rec bind_cases chats = function
         | [] -> sumR (List.rev chats)
         | (branch, prob) :: rest ->
-            trans env prob (fun phat_raw ->
-              bind_rev "_rev_phat" phat_raw (fun phat ->
-                bind_rev "_rev_bhat" (prob_trans env branch kappa) (fun bhat ->
-                  bind_rev "_rev_chat"
-                    (mulR phat bhat (fun chat -> chat))
-                    (fun chat -> bind_cases (chat :: chats) rest))))
+            bind_rev "_rev_phat" (trans env prob) (fun phat ->
+              bind_rev "_rev_bhat" (prob_trans env branch kappa) (fun bhat ->
+                bind_rev "_rev_chat"
+                  (mulR phat bhat)
+                  (fun chat -> bind_cases (chat :: chats) rest)))
       in
       bind_cases [] cases
 
   | Let (x, e1, e2) ->
-      prob_trans env e1 (fun v ->
-        node (Let (x, v, prob_trans (StringSet.add x env) e2 kappa)))
+      if is_prob_effect (effect_of e1) then
+        prob_trans env e1 (fun v ->
+          node (Let (x, v, prob_trans (StringSet.add x env) e2 kappa)))
+      else
+        node (Let (x, trans env e1, prob_trans (StringSet.add x env) e2 kappa))
 
   | If (e1, e2, e3) ->
-      prob_trans env e1 (fun cond ->
-        node (If (cond, prob_trans env e2 kappa, prob_trans env e3 kappa)))
+      if is_prob_effect (effect_of e1) then
+        prob_trans env e1 (fun cond ->
+          node (If (cond, prob_trans env e2 kappa, prob_trans env e3 kappa)))
+      else
+        node (If (value env e1, prob_trans env e2 kappa, prob_trans env e3 kappa))
 
   | And (e1, e2) ->
       prob_trans env e1 (fun b1 ->
@@ -388,7 +375,10 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
       prob_trans env e1 (fun b1 -> kappa (node (Not b1)))
 
   | Seq (e1, e2) ->
-      prob_trans env e1 (fun _ -> prob_trans env e2 kappa)
+      if is_prob_effect (effect_of e1) then
+        prob_trans env e1 (fun _ -> prob_trans env e2 kappa)
+      else
+        seq (trans env e1) (prob_trans env e2 kappa)
 
   | Observe e1 ->
       prob_trans env e1 (fun b ->
@@ -399,25 +389,25 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           prob_trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              addR yhat1 yhat2 kappa))))
+              bind_rev "_rev_yhat" (addR yhat1 yhat2) kappa))))
   | Sub (e1, e2) ->
       prob_trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           prob_trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              subR yhat1 yhat2 kappa))))
+              bind_rev "_rev_yhat" (subR yhat1 yhat2) kappa))))
   | Mul (e1, e2) ->
       prob_trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           prob_trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              mulR yhat1 yhat2 kappa))))
+              bind_rev "_rev_yhat" (mulR yhat1 yhat2) kappa))))
   | Div (e1, e2) ->
       prob_trans env e1 (fun yhat1_raw ->
         bind_rev "_rev_yhat" yhat1_raw (fun yhat1 ->
           prob_trans env e2 (fun yhat2_raw ->
             bind_rev "_rev_yhat" yhat2_raw (fun yhat2 ->
-              divR yhat1 yhat2 kappa))))
+              bind_rev "_rev_yhat" (divR yhat1 yhat2) kappa))))
 
   | Cmp (op, e1, e2, flipped) ->
       prob_trans env e1 (fun yhat1 ->
@@ -773,7 +763,7 @@ let dual_expectation_raw ?param ?seeds te =
         prob_trans env te (expectation_value ty)
         |> seed_float_objective result_ref
     | Pure | EMeta _ ->
-        trans env te (objective_cont result_ref ty)
+        objective_cont result_ref ty (trans env te)
   in
   bind_inputs seeds
     (node
