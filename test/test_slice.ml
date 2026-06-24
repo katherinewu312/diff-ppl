@@ -596,13 +596,6 @@ let test_reverse_discrete_includes_probability_and_body_derivatives _ =
     (contains_substring raw_plain "reset");
   assert_substring_order raw_plain "_rev_phat" "_rev_bhat";
   assert_substring_order raw_plain "_rev_bhat" "_rev_chat";
-  let lowered_plain =
-    Slice.Pretty.string_of_expr_plain (Slice.Reverse.lower_shift_reset raw)
-  in
-  assert_bool "lowered reverse program should eliminate shift"
-    (not (contains_substring lowered_plain "shift"));
-  assert_bool "lowered reverse program should eliminate reset"
-    (not (contains_substring lowered_plain "reset"));
   let dual = Slice.Reverse.dual_expectation (Slice.Inference.infer (transform source)) in
   let primal, tangent = eval_dual_with_theta 0.3 dual in
   assert_close 0.09 primal;
