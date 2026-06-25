@@ -94,7 +94,13 @@ let rec sequence = function
 let apply_cont k yhat =
   node (FuncApp (node (Var k), yhat))
 
-let binary_reverse primal_op back1 back2 yhat1 yhat2 =
+type binary_rule =
+  { primal_op : expr -> expr -> expr
+  ; backprop_left : expr -> expr -> expr -> expr
+  ; backprop_right : expr -> expr -> expr -> expr
+  }
+
+let binary_reverse { primal_op; backprop_left; backprop_right } yhat1 yhat2 =
   let cont = Util.fresh_var "_rev_k" in
   shift cont
     (bind_rev "_rev_yhat"
@@ -102,45 +108,45 @@ let binary_reverse primal_op back1 back2 yhat1 yhat2 =
        (fun yhat ->
           sequence
             [ apply_cont cont yhat
-            ; add_adjoint yhat1 (back1 yhat yhat1 yhat2)
-            ; add_adjoint yhat2 (back2 yhat yhat1 yhat2)
+            ; add_adjoint yhat1 (backprop_left yhat yhat1 yhat2)
+            ; add_adjoint yhat2 (backprop_right yhat yhat1 yhat2)
             ]))
 
-let addR yhat1 yhat2 =
+let addR =
   binary_reverse
-    add
-    (fun yhat _ _ -> adjoint_value yhat)
-    (fun yhat _ _ -> adjoint_value yhat)
-    yhat1
-    yhat2
+    { primal_op = add
+    ; backprop_left = (fun yhat _ _ -> adjoint_value yhat)
+    ; backprop_right = (fun yhat _ _ -> adjoint_value yhat)
+    }
 
-let subR yhat1 yhat2 =
+let subR =
   binary_reverse
-    sub
-    (fun yhat _ _ -> adjoint_value yhat)
-    (fun yhat _ _ -> sub zero (adjoint_value yhat))
-    yhat1
-    yhat2
+    { primal_op = sub
+    ; backprop_left = (fun yhat _ _ -> adjoint_value yhat)
+    ; backprop_right = (fun yhat _ _ -> sub zero (adjoint_value yhat))
+    }
 
-let mulR yhat1 yhat2 =
+let mulR =
   binary_reverse
-    mul
-    (fun yhat _ yhat2 -> mul (adjoint_value yhat) (primal yhat2))
-    (fun yhat yhat1 _ -> mul (adjoint_value yhat) (primal yhat1))
-    yhat1
-    yhat2
+    { primal_op = mul
+    ; backprop_left =
+        (fun yhat _ yhat2 -> mul (adjoint_value yhat) (primal yhat2))
+    ; backprop_right =
+        (fun yhat yhat1 _ -> mul (adjoint_value yhat) (primal yhat1))
+    }
 
-let divR yhat1 yhat2 =
+let divR =
   binary_reverse
-    div
-    (fun yhat _ yhat2 -> div (adjoint_value yhat) (primal yhat2))
-    (fun yhat yhat1 yhat2 ->
-       sub zero
-         (div
-            (mul (adjoint_value yhat) (primal yhat1))
-            (mul (primal yhat2) (primal yhat2))))
-    yhat1
-    yhat2
+    { primal_op = div
+    ; backprop_left =
+        (fun yhat _ yhat2 -> div (adjoint_value yhat) (primal yhat2))
+    ; backprop_right =
+        (fun yhat yhat1 yhat2 ->
+           sub zero
+             (div
+                (mul (adjoint_value yhat) (primal yhat1))
+                (mul (primal yhat2) (primal yhat2))))
+    }
 
 let rec sumR = function
   | [] -> reverse_float zero
@@ -149,128 +155,26 @@ let rec sumR = function
       bind_rev "_rev_sum" (sumR rest) (fun rest_yhat ->
         addR yhat rest_yhat)
 
-let rec sample_value env = function
-  | Distr1 (kind, e1) -> Distr1 (kind, primal (value env e1))
-  | Distr2 (kind, e1, e2) ->
-      Distr2 (kind, primal (value env e1), primal (value env e2))
+let rec trans_binary env e1 e2 op =
+  bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+    bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+      op yhat1 yhat2))
 
-and value env (ty, _, TAExprNode ae) =
+and trans env (ty, _, TAExprNode ae) =
   match ae with
   | Const f ->
       if is_float_ty ty then reverse_float (const f) else const f
-  | BoolConst b -> bool b
+  | BoolConst b ->
+      bool b
   | Var x ->
       if is_float_ty ty && not (StringSet.mem x env) then
         reverse_float (node (Var x))
       else
         node (Var x)
-  | Add (e1, e2) ->
-      let yhat1 = value env e1 in
-      let yhat2 = value env e2 in
-      reverse_float (add (primal yhat1) (primal yhat2))
-  | Sub (e1, e2) ->
-      let yhat1 = value env e1 in
-      let yhat2 = value env e2 in
-      reverse_float (sub (primal yhat1) (primal yhat2))
-  | Mul (e1, e2) ->
-      let yhat1 = value env e1 in
-      let yhat2 = value env e2 in
-      reverse_float (mul (primal yhat1) (primal yhat2))
-  | Div (e1, e2) ->
-      let yhat1 = value env e1 in
-      let yhat2 = value env e2 in
-      reverse_float (div (primal yhat1) (primal yhat2))
-  | SpecialFunc (name, args) ->
-      let args' = List.map (fun arg -> primal (value env arg)) args in
-      reverse_float (special name args')
-  | Cmp (op, e1, e2, flipped) ->
-      node (Cmp (op, primal (value env e1), primal (value env e2), flipped))
-  | FinCmp (op, e1, e2, n, flipped) ->
-      node (FinCmp (op, value env e1, value env e2, n, flipped))
-  | FinEq (e1, e2, n) ->
-      node (FinEq (value env e1, value env e2, n))
-  | And (e1, e2) ->
-      node (If (value env e1, value env e2, bool false))
-  | Or (e1, e2) ->
-      node (If (value env e1, bool true, value env e2))
-  | Not e1 -> node (Not (value env e1))
-  | If (e1, e2, e3) ->
-      node (If (value env e1, value env e2, value env e3))
-  | Let (x, e1, e2) ->
-      node (Let (x, value env e1, value (StringSet.add x env) e2))
-  | Pair (e1, e2) -> pair (value env e1) (value env e2)
-  | First e1 -> first (value env e1)
-  | Second e1 -> second (value env e1)
-  | Fun (x, e1) ->
-      if is_prob_effect (effect_of e1) then
-        let k = Util.fresh_var "_rev_kappa" in
-        node
-          (Fun
-             ( x
-             , node
-                 (Fun
-                    ( k
-                    , prob_trans (StringSet.add x env) e1
-                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
-      else
-        node (Fun (x, trans (StringSet.add x env) e1))
-  | FuncApp (e1, e2) ->
-      node (FuncApp (value env e1, value env e2))
-  | Fix (f, x, e1) ->
-      node
-        (Fix
-           ( f
-           , x
-           , trans (StringSet.add f (StringSet.add x env)) e1 ))
-  | FinConst (k, n) -> node (FinConst (k, n))
-  | Observe e1 -> node (Observe (value env e1))
-  | Nil -> node Nil
-  | Cons (e1, e2) -> node (Cons (value env e1, value env e2))
-  | MatchList (e1, e_nil, y, ys, e_cons) ->
-      node
-        (MatchList
-           ( value env e1
-           , value env e_nil
-           , y
-           , ys
-           , value (StringSet.add y (StringSet.add ys env)) e_cons ))
-  | Ref e1 -> ref_ (value env e1)
-  | Deref e1 -> deref (value env e1)
-  | Assign (e1, e2) -> assign (value env e1) (value env e2)
-  | Seq (e1, e2) -> seq (value env e1) (value env e2)
-  | Unit -> unit_
-  | RuntimeError msg ->
-      if is_float_ty ty then reverse_float (node (RuntimeError msg))
-      else node (RuntimeError msg)
-  | Cdf (dist, point) ->
-      reverse_float (node (Cdf (sample_value env dist, primal (value env point))))
-  | CdfExpr (kernel, point) ->
-      reverse_float (node (CdfExpr (primal (value env kernel), primal (value env point))))
-  | Sample _ ->
-      unsupported "continuous Sample remained in program; run discretization before reverse AD"
-  | DiscreteCase _ ->
-      unsupported "discrete reverse AD is not implemented yet"
-  | Reset _ | Shift _ ->
-      unsupported "shift/reset are internal reverse-AD constructs"
-
-and trans env ((_, _, TAExprNode ae) as te) =
-  match ae with
-  | Add (e1, e2) ->
-      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
-        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
-          addR yhat1 yhat2))
-  | Sub (e1, e2) ->
-      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
-        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
-          subR yhat1 yhat2))
-  | Mul (e1, e2) ->
-      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
-        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
-          mulR yhat1 yhat2))
-  | Div (e1, e2) ->
-      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
-        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
-          divR yhat1 yhat2))
+  | Add (e1, e2) -> trans_binary env e1 e2 addR
+  | Sub (e1, e2) -> trans_binary env e1 e2 subR
+  | Mul (e1, e2) -> trans_binary env e1 e2 mulR
+  | Div (e1, e2) -> trans_binary env e1 e2 divR
   | SpecialFunc ("sqrt", [e1]) ->
       bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
         let cont = Util.fresh_var "_rev_k" in
@@ -290,15 +194,52 @@ and trans env ((_, _, TAExprNode ae) as te) =
   | Let (x, e1, e2) ->
       node (Let (x, trans env e1, trans (StringSet.add x env) e2))
   | If (e1, e2, e3) ->
-      node (If (value env e1, trans env e2, trans env e3))
+      node (If (trans env e1, trans env e2, trans env e3))
+  | Cmp (op, e1, e2, flipped) ->
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        bind_rev "_rev_yhat" (trans env e2) (fun yhat2 ->
+          node (Cmp (op, primal yhat1, primal yhat2, flipped))))
+  | FinCmp (op, e1, e2, n, flipped) ->
+      node (FinCmp (op, trans env e1, trans env e2, n, flipped))
+  | FinEq (e1, e2, n) ->
+      node (FinEq (trans env e1, trans env e2, n))
+  | And (e1, e2) ->
+      node (If (trans env e1, trans env e2, bool false))
+  | Or (e1, e2) ->
+      node (If (trans env e1, bool true, trans env e2))
+  | Not e1 ->
+      node (Not (trans env e1))
   | Pair (e1, e2) ->
       pair (trans env e1) (trans env e2)
   | First e1 ->
       first (trans env e1)
   | Second e1 ->
       second (trans env e1)
+  | Fun (x, e1) ->
+      if is_prob_effect (effect_of e1) then
+        let k = Util.fresh_var "_rev_kappa" in
+        node
+          (Fun
+             ( x
+             , node
+                 (Fun
+                    ( k
+                    , prob_trans (StringSet.add x env) e1
+                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+      else
+        node (Fun (x, trans (StringSet.add x env) e1))
   | FuncApp (e1, e2) ->
       node (FuncApp (trans env e1, trans env e2))
+  | Fix (f, x, e1) ->
+      node
+        (Fix
+           ( f
+           , x
+           , trans (StringSet.add f (StringSet.add x env)) e1 ))
+  | FinConst (k, n) ->
+      node (FinConst (k, n))
+  | Nil ->
+      node Nil
   | Cons (e1, e2) ->
       node (Cons (trans env e1, trans env e2))
   | MatchList (e1, e_nil, y, ys, e_cons) ->
@@ -317,18 +258,19 @@ and trans env ((_, _, TAExprNode ae) as te) =
       assign (trans env e1) (trans env e2)
   | Seq (e1, e2) ->
       seq (trans env e1) (trans env e2)
+  | Unit ->
+      unit_
   | Observe e1 ->
-      sequence [node (Observe (value env e1)); unit_]
+      sequence [node (Observe (trans env e1)); unit_]
+  | RuntimeError msg ->
+      if is_float_ty ty then reverse_float (node (RuntimeError msg))
+      else node (RuntimeError msg)
   | Cdf _ | CdfExpr _ ->
       unsupported "reverse differentiation of CDF expressions is not implemented yet"
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | DiscreteCase _ ->
       unsupported "discrete reverse AD is not implemented yet"
-  | Const _ | BoolConst _ | Var _ | Cmp _ | FinCmp _ | FinEq _
-  | And _ | Or _ | Not _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
-  | RuntimeError _ ->
-      value env te
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
 
@@ -361,7 +303,7 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
         prob_trans env e1 (fun cond ->
           node (If (cond, prob_trans env e2 kappa, prob_trans env e3 kappa)))
       else
-        node (If (value env e1, prob_trans env e2 kappa, prob_trans env e3 kappa))
+        node (If (trans env e1, prob_trans env e2 kappa, prob_trans env e3 kappa))
 
   | And (e1, e2) ->
       prob_trans env e1 (fun b1 ->
@@ -465,7 +407,7 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
   | SpecialFunc _ | RuntimeError _ ->
-      kappa (value env te)
+      kappa (trans env te)
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
 
