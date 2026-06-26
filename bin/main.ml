@@ -28,7 +28,12 @@ type ad_mode =
 type ad_output =
   { raw : Slice.Ast.expr
   ; simplified : Slice.Ast.expr
+  ; vector_output : vector_output
   }
+and vector_output =
+  | NoVector
+  | GradientVector of string list
+  | DualGradientVector of string list
 
 type assignment =
   { name : string
@@ -39,6 +44,7 @@ type assignment =
 type ad_args =
   { values : assignment list
   ; seeds : Slice.Adev.seeds option
+  ; explicit_seeds : bool
   ; cut_order_at : Slice.Cut_order.at option
   }
 
@@ -72,6 +78,7 @@ let parse_ad_args assignments =
   let values = List.rev values in
   let seed_values = List.rev seed_values in
   let at_values = List.filter (fun assignment -> assignment.is_at) values in
+  let explicit_seeds = seed_values <> [] in
   let seeds =
     match seed_values, at_values with
     | [], [] -> None
@@ -89,7 +96,7 @@ let parse_ad_args assignments =
     | { name; value; _ } :: _ -> Some { Slice.Cut_order.param = name; value }
     | [] -> None
   in
-  { values; seeds; cut_order_at }
+  { values; seeds; explicit_seeds; cut_order_at }
 
 let apply_values_raw values e =
   List.fold_left
@@ -106,6 +113,16 @@ let finalize_simplified_ad ad_mode values e =
   | Forward -> simplified
   | Reverse -> Slice.Reverse.interpret_closed_or_original simplified
 
+let free_float_var_names te =
+  Slice.Adev.free_float_vars te
+  |> Slice.Adev.StringSet.elements
+
+let format_ad_expr vector_output e =
+  match vector_output, e with
+  | NoVector, _ -> Slice.Pretty.string_of_expr e
+  | GradientVector labels, _ -> Slice.Pretty.string_of_labeled_expr_list labels e
+  | DualGradientVector labels, _ -> Slice.Pretty.string_of_dual_with_labeled_expr_list labels e
+
 let run ~print_all ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
@@ -114,17 +131,25 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
   let texpr = Slice.Inference.infer normalized in
   let cut_order_at = ad_args.cut_order_at in
   let seeds = ad_args.seeds in
+  let forward_seeds =
+    if ad_args.explicit_seeds then seeds else None
+  in
   let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
   let ad_output =
     match mode with
     | Discretize -> None
     | AdGradient ->
         let discretized_texpr = Slice.Inference.infer transformed in
+        let vector_output =
+          match ad_mode, ad_args.explicit_seeds with
+          | Forward, false -> GradientVector (free_float_var_names discretized_texpr)
+          | Forward, true | Reverse, _ -> NoVector
+        in
         let raw, simplified =
           match ad_mode with
           | Forward ->
-              ( Slice.Adev.gradient_raw ?seeds discretized_texpr
-              , Slice.Adev.gradient ?seeds discretized_texpr )
+              ( Slice.Adev.gradient_raw ?seeds:forward_seeds discretized_texpr
+              , Slice.Adev.gradient ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
               ( Slice.Reverse.gradient_raw ?seeds discretized_texpr
               , Slice.Reverse.gradient ?seeds discretized_texpr )
@@ -133,14 +158,20 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         Some
           { raw
           ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
+          ; vector_output
           }
     | AdDual ->
         let discretized_texpr = Slice.Inference.infer transformed in
+        let vector_output =
+          match ad_mode, ad_args.explicit_seeds with
+          | Forward, false -> DualGradientVector (free_float_var_names discretized_texpr)
+          | Forward, true | Reverse, _ -> NoVector
+        in
         let raw, simplified =
           match ad_mode with
           | Forward ->
-              ( Slice.Adev.dual_expectation_raw ?seeds discretized_texpr
-              , Slice.Adev.dual_expectation ?seeds discretized_texpr )
+              ( Slice.Adev.dual_expectation_raw ?seeds:forward_seeds discretized_texpr
+              , Slice.Adev.dual_expectation ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
               ( Slice.Reverse.dual_expectation_raw ?seeds discretized_texpr
               , Slice.Reverse.dual_expectation ?seeds discretized_texpr )
@@ -149,14 +180,14 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         Some
           { raw
           ; simplified = finalize_simplified_ad ad_mode ad_args.values simplified
+          ; vector_output
           }
   in
-  let output_expr =
+  let output_source =
     match ad_output with
-    | None -> transformed
-    | Some e -> e.simplified
+    | None -> Slice.Pretty.string_of_expr transformed
+    | Some e -> format_ad_expr e.vector_output e.simplified
   in
-  let output_source = Slice.Pretty.string_of_expr output_expr in
   if print_all then (
     print_section "Source program" source;
     print_section "Normalized program" (Slice.Pretty.string_of_expr normalized);
@@ -164,7 +195,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     print_section "Discretized program" (Slice.Pretty.string_of_expr transformed);
     (match ad_output with
      | None -> ()
-     | Some { raw; simplified } ->
+     | Some { raw; simplified; vector_output } ->
           let ad_name =
             match ad_mode with
             | Forward -> "forward"
@@ -176,8 +207,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
             | AdGradient -> "Raw " ^ ad_name ^ " AD gradient program", "Simplified " ^ ad_name ^ " AD gradient program"
             | AdDual -> "Raw " ^ ad_name ^ " AD dual program", "Simplified " ^ ad_name ^ " AD dual program"
           in
-         print_section raw_title (Slice.Pretty.string_of_expr raw);
-         print_section simplified_title (Slice.Pretty.string_of_expr simplified)))
+         print_section raw_title (format_ad_expr vector_output raw);
+         print_section simplified_title (format_ad_expr vector_output simplified)))
   else
     print_endline output_source
 

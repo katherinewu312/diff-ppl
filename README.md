@@ -79,6 +79,7 @@ dune exec diff_ppl -- --print-all FILE.slice
 dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
 dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
+dune exec diff_ppl -- --ad-dual theta=0.5 alpha=0.2 FILE.slice
 dune exec diff_ppl -- --ad-dual theta=0.5 dtheta=1 alpha=0.2 dalpha=1 FILE.slice
 dune exec diff_ppl -- --reverse --ad-dual theta=0.5 dtheta=1 alpha=0.2 dalpha=1 FILE.slice
 ```
@@ -93,26 +94,30 @@ Supports:
 * `--print-all --ad-dual` for raw + simplified dual output
 * `--forward` or `--reverse` to choose AD mode; forward is the default if no flag is specified
 * `--at PARAM=VALUE` for concrete evaluation for AD modes
-* `PARAM=VALUE` and `dPARAM=SEED` for seeding
+* `PARAM=VALUE` for concrete substitution and `dPARAM=SEED` for explicit seeding
 
-`--ad` prints the ADEV-style tangent program for the discretized program.
-`--ad-dual` prints the full dual program as `(primal, tangent)`.
+For forward mode, when no explicit `dPARAM=SEED` assignments are provided,
+`--ad` prints the full gradient vector for all free float input variables, and
+`--ad-dual` prints `(expected_value, gradient_vector)`. The vector entries are
+ordered by variable name and printed as `(dPARAM = derivative; ...)`. If
+explicit `dPARAM=SEED` assignments are provided, forward mode keeps the old
+scalar directional-derivative behavior: `--ad` prints the seeded tangent and
+`--ad-dual` prints `(primal, tangent)`.
 With `--print-all`, AD modes also print the raw source-to-source AD program
 before the simplified AD output.
 
 **** It is best to give a concrete PARAM=VALUE at runtime. Even though symbolic expressions like theta -> d/dtheta E[X(theta)] _can_ be produced, such expressions may not always be correct (i.e. the ordering of the cuts of an expression may get messed up, causing problems in the discretization and hence the AD transformation). ****
 
 AD modes also accept `--at PARAM=VALUE` or `--at=PARAM=VALUE`. This uses
-`PARAM` as the differentiated variable, substitutes `VALUE` into the raw AD
-program, and then simplifies the simplified AD program again at that concrete
-point.
+`VALUE` when ordering symbolic discretization cuts, substitutes `VALUE` into
+the raw AD program, and then simplifies the simplified AD program again at that
+concrete point.
 
 AD modes can also accept bare assignments before the input file. `PARAM=VALUE`
 substitutes a concrete value, and `dPARAM=SEED` sets the AD seed for `PARAM`.
 If explicit `dPARAM=SEED` assignments are provided, unspecified variables get
-seed `0`. If no explicit seeds are provided, a program with exactly one free
-float variable seeds that variable with `1`; a program with multiple free float
-variables requires an explicit seed.
+seed `0`. In forward mode, if no explicit seeds are provided, all free float
+variables are seeded one at a time to produce the gradient vector.
 
 ## Project Layout
 

@@ -70,6 +70,9 @@ let dual_const f = pair (const f) (const 0.0)
 let dual_seed x tangent = pair (node (Var x)) (const tangent)
 let dual_runtime msg = pair (runtime_error msg) (runtime_error msg)
 
+let list_expr xs =
+  List.fold_right (fun x acc -> node (Cons (x, acc))) xs (node Nil)
+
 let dual_add a b =
   let ap = dual_primal a and at = dual_tangent a in
   let bp = dual_primal b and bt = dual_tangent b in
@@ -413,11 +416,8 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       unsupported "continuous Sample remained in program; run discretization before ADEV"
 
 let free_float_vars te =
-  (*  Walks the typed AST and collects free variables whose type is float, ignoring locally bound variables. 
-      When no explicit seeds are given, infer_default_seeds uses it to decide:
-      * exactly one free float var → seed it with 1
-      * zero free float vars → no seeds
-      * multiple free float vars → error asking for explicit dVAR=1 seed. *)
+  (* Walks the typed AST and collects free variables whose type is float,
+     ignoring locally bound variables. *)
   let rec sample bound = function
     | Distr1 (_, e1) -> expr bound e1
     | Distr2 (_, e1, e2) -> StringSet.union (expr bound e1) (expr bound e2)
@@ -463,35 +463,51 @@ let free_float_vars te =
   in
   expr StringSet.empty te
 
-let infer_default_seeds te =
-  match StringSet.elements (free_float_vars te) with
-  | [param] -> seeds_of_param param
-  | [] -> no_seeds
-  | params ->
-      unsupported
-        ("multiple free float variables found ("
-         ^ String.concat ", " params
-         ^ "); please specify at least one dVARIABLE seed, e.g. d"
-         ^ List.hd params
-         ^ "=1")
-
 (* discretized program
 -> raw AD dual program
 -> Simplify.expr raw_program
 -> simplied AD dual program *)
 
-let dual_expectation_raw ?param ?seeds te =
-  let seeds =
-    match seeds, param with
-    | Some seeds, _ -> seeds
-    | None, Some param -> seeds_of_param param
-    | None, None -> infer_default_seeds te
-  in
+let dual_expectation_with_seeds seeds te =
   let ty, _, _ = te in
   trans (empty_env seeds) te (objective_dual ty)
 
+let gradient_with_seeds seeds te =
+  dual_tangent (dual_expectation_with_seeds seeds te)
+
+let gradient_vector_raw te =
+  free_float_vars te
+  |> StringSet.elements
+  |> List.map (fun param -> gradient_with_seeds (seeds_of_param param) te)
+  |> list_expr
+
+let dual_expectation_vector_raw te =
+  match StringSet.elements (free_float_vars te) with
+  | [] ->
+      let dual = dual_expectation_with_seeds no_seeds te in
+      pair (dual_primal dual) (node Nil)
+  | param :: params ->
+      let first_dual = dual_expectation_with_seeds (seeds_of_param param) te in
+      let rest_gradients =
+        List.map
+          (fun param -> gradient_with_seeds (seeds_of_param param) te)
+          params
+      in
+      pair
+        (dual_primal first_dual)
+        (list_expr (dual_tangent first_dual :: rest_gradients))
+
+let dual_expectation_raw ?param ?seeds te =
+  match seeds, param with
+  | Some seeds, _ -> dual_expectation_with_seeds seeds te
+  | None, Some param -> dual_expectation_with_seeds (seeds_of_param param) te
+  | None, None -> dual_expectation_vector_raw te
+
 let gradient_raw ?param ?seeds te =
-  dual_tangent (dual_expectation_raw ?param ?seeds te)
+  match seeds, param with
+  | Some seeds, _ -> gradient_with_seeds seeds te
+  | None, Some param -> gradient_with_seeds (seeds_of_param param) te
+  | None, None -> gradient_vector_raw te
 
 let dual_expectation ?param ?seeds te =
   Simplify.algebraic (dual_expectation_raw ?param ?seeds te)

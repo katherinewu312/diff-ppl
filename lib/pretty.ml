@@ -562,5 +562,32 @@ let string_of_texpr texpr =
 let string_of_aexpr aexpr =
   string_of_aexpr_indented aexpr
 
+let rec expr_list_elements (ExprNode e) =
+  match e with
+  | Nil -> Some []
+  | Cons (hd, tl) ->
+      Option.map (fun rest -> hd :: rest) (expr_list_elements tl)
+  | _ -> None
+
+let string_of_labeled_expr_list labels expr_list =
+  match expr_list_elements expr_list with
+  | Some exprs when List.length labels = List.length exprs ->
+      List.map2
+        (fun label expr ->
+           "d" ^ label ^ " = " ^ string_of_expr expr)
+        labels
+        exprs
+      |> String.concat "; "
+      |> Printf.sprintf "(%s)"
+  | _ -> string_of_expr expr_list
+
+let string_of_dual_with_labeled_expr_list labels = function
+  | ExprNode (Pair (primal, gradient)) ->
+      Printf.sprintf
+        "(%s, %s)"
+        (string_of_expr primal)
+        (string_of_labeled_expr_list labels gradient)
+  | expr -> string_of_expr expr
+
 let string_of_float_list (l : float list) : string =
   "[" ^ (String.concat "; " (List.map (Printf.sprintf "%g") l)) ^ "]"
