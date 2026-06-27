@@ -114,8 +114,8 @@ let finalize_simplified_ad ad_mode values e =
   | Reverse -> Slice.Reverse.interpret_closed_or_original simplified
 
 let free_float_var_names te =
-  Slice.Adev.free_float_vars te
-  |> Slice.Adev.StringSet.elements
+  Slice.Util.free_float_vars te
+  |> Slice.Util.StringSet.elements
 
 let format_ad_expr vector_output e =
   match vector_output, e with
@@ -134,6 +134,9 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
   let forward_seeds =
     if ad_args.explicit_seeds then seeds else None
   in
+  let reverse_seeds =
+    if ad_args.explicit_seeds then seeds else None
+  in
   let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
   let ad_output =
     match mode with
@@ -142,8 +145,9 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         let discretized_texpr = Slice.Inference.infer transformed in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
-          | Forward, false -> GradientVector (free_float_var_names discretized_texpr)
-          | Forward, true | Reverse, _ -> NoVector
+          | Forward, false | Reverse, false ->
+              GradientVector (free_float_var_names discretized_texpr)
+          | Forward, true | Reverse, true -> NoVector
         in
         let raw, simplified =
           match ad_mode with
@@ -151,8 +155,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
               ( Slice.Adev.gradient_raw ?seeds:forward_seeds discretized_texpr
               , Slice.Adev.gradient ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
-              ( Slice.Reverse.gradient_raw ?seeds discretized_texpr
-              , Slice.Reverse.gradient ?seeds discretized_texpr )
+              ( Slice.Reverse.gradient_raw ?seeds:reverse_seeds discretized_texpr
+              , Slice.Reverse.gradient ?seeds:reverse_seeds discretized_texpr )
         in
         let raw = apply_values_raw ad_args.values raw in
         Some
@@ -164,8 +168,9 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         let discretized_texpr = Slice.Inference.infer transformed in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
-          | Forward, false -> DualGradientVector (free_float_var_names discretized_texpr)
-          | Forward, true | Reverse, _ -> NoVector
+          | Forward, false | Reverse, false ->
+              DualGradientVector (free_float_var_names discretized_texpr)
+          | Forward, true | Reverse, true -> NoVector
         in
         let raw, simplified =
           match ad_mode with
@@ -173,8 +178,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
               ( Slice.Adev.dual_expectation_raw ?seeds:forward_seeds discretized_texpr
               , Slice.Adev.dual_expectation ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
-              ( Slice.Reverse.dual_expectation_raw ?seeds discretized_texpr
-              , Slice.Reverse.dual_expectation ?seeds discretized_texpr )
+              ( Slice.Reverse.dual_expectation_raw ?seeds:reverse_seeds discretized_texpr
+              , Slice.Reverse.dual_expectation ?seeds:reverse_seeds discretized_texpr )
         in
         let raw = apply_values_raw ad_args.values raw in
         Some

@@ -16,7 +16,7 @@
 
 open Ast
 
-module StringSet = Set.Make(String)
+module StringSet = Util.StringSet
 module StringMap = Map.Make(String)
 
 type seeds = float StringMap.t
@@ -70,9 +70,6 @@ let dual_const f = pair (const f) (const 0.0)
 let dual_seed x tangent = pair (node (Var x)) (const tangent)
 let dual_runtime msg = pair (runtime_error msg) (runtime_error msg)
 
-let list_expr xs =
-  List.fold_right (fun x acc -> node (Cons (x, acc))) xs (node Nil)
-
 let dual_add a b =
   let ap = dual_primal a and at = dual_tangent a in
   let bp = dual_primal b and bt = dual_tangent b in
@@ -115,11 +112,6 @@ let is_prob_effect eff =
 let function_returns_prob te =
   match Ast.force (ty_of te) with
   | TFun (_, eff, _) -> is_prob_effect eff
-  | _ -> false
-
-let is_float_ty ty =
-  match Ast.force ty with
-  | TFloat _ -> true
   | _ -> false
 
 let rec texpr_contains_sample (_, _, TAExprNode ae) =
@@ -183,7 +175,7 @@ and cdf_kernel_dual env ((_, _, TAExprNode ae) as te) =
   | _ -> det_ad env te
 
 and primal env ((ty, _, _) as te) =
-  if is_float_ty ty then dual_primal (det_ad env te)
+  if Util.is_float_ty ty then dual_primal (det_ad env te)
   else det_ad env te
 
 and det_ad env (ty, eff, TAExprNode ae) =
@@ -191,7 +183,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Const f -> dual_const f
   | BoolConst b -> bool b
   | Var x ->
-      if is_float_ty ty then
+      if Util.is_float_ty ty then
         if is_bound env x then node (Var x)
         else dual_seed x (seed_of env x)
       else
@@ -281,7 +273,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
       let dargs = List.map (det_ad env) args in
       let primal_args = List.map dual_primal dargs in
       let primal = Simplify.mk_special name primal_args in
-      if is_float_ty ty then
+      if Util.is_float_ty ty then
         (match name, dargs with
          | "sqrt", [darg] ->
              pair
@@ -295,7 +287,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
         primal
 
   | RuntimeError msg ->
-      if is_float_ty ty then dual_runtime msg else node (RuntimeError msg)
+      if Util.is_float_ty ty then dual_runtime msg else node (RuntimeError msg)
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
   | Sample _ ->
@@ -415,54 +407,6 @@ and trans env ((_, _, TAExprNode ae) as te) k =
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before ADEV"
 
-let free_float_vars te =
-  (* Walks the typed AST and collects free variables whose type is float,
-     ignoring locally bound variables. *)
-  let rec sample bound = function
-    | Distr1 (_, e1) -> expr bound e1
-    | Distr2 (_, e1, e2) -> StringSet.union (expr bound e1) (expr bound e2)
-  and union_many sets =
-    List.fold_left StringSet.union StringSet.empty sets
-  and expr bound (ty, _, TAExprNode ae) =
-    match ae with
-    | Var x ->
-        if is_float_ty ty && not (StringSet.mem x bound) then StringSet.singleton x
-        else StringSet.empty
-    | Const _ | BoolConst _ | FinConst _ | Nil | Unit | RuntimeError _ -> StringSet.empty
-    | Let (x, e1, e2) ->
-        StringSet.union (expr bound e1) (expr (StringSet.add x bound) e2)
-    | Fun (x, e1) -> expr (StringSet.add x bound) e1
-    | Fix (f, x, e1) -> expr (StringSet.add f (StringSet.add x bound)) e1
-    | MatchList (e1, e_nil, y, ys, e_cons) ->
-        union_many
-          [ expr bound e1
-          ; expr bound e_nil
-          ; expr (StringSet.add y (StringSet.add ys bound)) e_cons
-          ]
-    | Sample dist -> sample bound dist
-    | Cdf (dist, point) -> StringSet.union (sample bound dist) (expr bound point)
-    | DiscreteCase cases ->
-        union_many
-          (List.map
-             (fun (branch, prob) -> StringSet.union (expr bound branch) (expr bound prob))
-             cases)
-    | Add (e1, e2) | Sub (e1, e2) | Mul (e1, e2) | Div (e1, e2)
-    | Cmp (_, e1, e2, _) | FinCmp (_, e1, e2, _, _) | FinEq (e1, e2, _)
-    | And (e1, e2) | Or (e1, e2) | Pair (e1, e2) | FuncApp (e1, e2)
-    | Cons (e1, e2) | Assign (e1, e2) | Seq (e1, e2) ->
-        StringSet.union (expr bound e1) (expr bound e2)
-    | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
-        expr bound e1
-    | Reset e1 -> expr bound e1
-    | Shift (k, e1) -> expr (StringSet.add k bound) e1
-    | If (e1, e2, e3) ->
-        union_many [expr bound e1; expr bound e2; expr bound e3]
-    | CdfExpr (kernel, point) ->
-        StringSet.union (expr bound kernel) (expr bound point)
-    | SpecialFunc (_, args) -> union_many (List.map (expr bound) args)
-  in
-  expr StringSet.empty te
-
 (* discretized program
 -> raw AD dual program
 -> Simplify.expr raw_program
@@ -476,13 +420,13 @@ let gradient_with_seeds seeds te =
   dual_tangent (dual_expectation_with_seeds seeds te)
 
 let gradient_vector_raw te =
-  free_float_vars te
+  Util.free_float_vars te
   |> StringSet.elements
   |> List.map (fun param -> gradient_with_seeds (seeds_of_param param) te)
-  |> list_expr
+  |> Util.expr_list
 
 let dual_expectation_vector_raw te =
-  match StringSet.elements (free_float_vars te) with
+  match StringSet.elements (Util.free_float_vars te) with
   | [] ->
       let dual = dual_expectation_with_seeds no_seeds te in
       pair (dual_primal dual) (node Nil)
@@ -495,7 +439,7 @@ let dual_expectation_vector_raw te =
       in
       pair
         (dual_primal first_dual)
-        (list_expr (dual_tangent first_dual :: rest_gradients))
+        (Util.expr_list (dual_tangent first_dual :: rest_gradients))
 
 let dual_expectation_raw ?param ?seeds te =
   match seeds, param with

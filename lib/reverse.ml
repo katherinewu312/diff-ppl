@@ -12,7 +12,7 @@
 
 open Ast
 
-module StringSet = Adev.StringSet
+module StringSet = Util.StringSet
 module StringMap = Adev.StringMap
 
 type seeds = Adev.seeds
@@ -44,11 +44,6 @@ let zero = const 0.0
 let one = const 1.0
 
 let unsupported msg = failwith ("Reverse AD: " ^ msg)
-
-let is_float_ty ty =
-  match Ast.force ty with
-  | TFloat _ -> true
-  | _ -> false
 
 let effect_of (_, eff, _) = Ast.force_effect eff
 
@@ -163,11 +158,11 @@ let rec trans_binary env e1 e2 op =
 and trans env (ty, _, TAExprNode ae) =
   match ae with
   | Const f ->
-      if is_float_ty ty then reverse_float (const f) else const f
+      if Util.is_float_ty ty then reverse_float (const f) else const f
   | BoolConst b ->
       bool b
   | Var x ->
-      if is_float_ty ty && not (StringSet.mem x env) then
+      if Util.is_float_ty ty && not (StringSet.mem x env) then
         reverse_float (node (Var x))
       else
         node (Var x)
@@ -263,7 +258,7 @@ and trans env (ty, _, TAExprNode ae) =
   | Observe e1 ->
       sequence [node (Observe (trans env e1)); unit_]
   | RuntimeError msg ->
-      if is_float_ty ty then reverse_float (node (RuntimeError msg))
+      if Util.is_float_ty ty then reverse_float (node (RuntimeError msg))
       else node (RuntimeError msg)
   | Cdf _ | CdfExpr _ ->
       unsupported "reverse differentiation of CDF expressions is not implemented yet"
@@ -411,8 +406,6 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
 
-let diff_var = "theta"
-
 let bind_input name body =
   node (Let (name, reverse_float (node (Var name)), body))
 
@@ -421,15 +414,6 @@ let bind_inputs seeds body =
     (fun name _ acc -> bind_input name acc)
     seeds
     body
-
-let default_seeds =
-  seeds_of_param diff_var
-
-let resolve_seeds ?param ?seeds () =
-  match seeds, param with
-  | Some seeds, _ -> seeds
-  | None, Some param -> seeds_of_param param
-  | None, None -> default_seeds
 
 let seed_names seeds =
   StringMap.fold (fun name _ acc -> StringSet.add name acc) seeds StringSet.empty
@@ -446,6 +430,20 @@ let seed_gradient seeds =
     seeds
     zero
 
+let seeds_of_params params =
+  List.fold_left
+    (fun acc param -> add_seed param 1.0 acc)
+    no_seeds
+    params
+
+let free_float_params te =
+  Util.free_float_vars te |> StringSet.elements
+
+let gradient_vector params =
+  params
+  |> List.map (fun name -> adjoint_value (node (Var name)))
+  |> Util.expr_list
+
 let objective result_ref ty zhat =
   match Ast.force ty with
   | TFloat _ ->
@@ -459,7 +457,7 @@ let objective result_ref ty zhat =
       unsupported "top-level reverse AD objective must be float- or bool-valued"
 
 let objective_cont result_ref ty zhat =
-  if is_float_ty ty then
+  if Util.is_float_ty ty then
     bind_rev "_rev_zhat" zhat (objective result_ref ty)
   else
     objective result_ref ty zhat
@@ -693,8 +691,7 @@ let interpret_effects_or_original e =
   | Some e' -> e'
   | None -> e
 
-let dual_expectation_raw ?param ?seeds te =
-  let seeds = resolve_seeds ?param ?seeds () in
+let dual_expectation_with_gradient seeds gradient te =
   let result = Util.fresh_var "_rev_result" in
   let result_ref = node (Var result) in
   let ty, _, _ = te in
@@ -714,11 +711,30 @@ let dual_expectation_raw ?param ?seeds te =
           , ref_ zero
           , sequence
               [ reset transformed
-              ; pair (deref result_ref) (seed_gradient seeds)
+              ; pair (deref result_ref) gradient
               ] )))
 
+let dual_expectation_with_seeds seeds te =
+  dual_expectation_with_gradient seeds (seed_gradient seeds) te
+
+let dual_expectation_vector_raw te =
+  let params = free_float_params te in
+  dual_expectation_with_gradient
+    (seeds_of_params params)
+    (gradient_vector params)
+    te
+
+let dual_expectation_raw ?param ?seeds te =
+  match seeds, param with
+  | Some seeds, _ -> dual_expectation_with_seeds seeds te
+  | None, Some param -> dual_expectation_with_seeds (seeds_of_param param) te
+  | None, None -> dual_expectation_vector_raw te
+
 let gradient_raw ?param ?seeds te =
-  second (dual_expectation_raw ?param ?seeds te)
+  match seeds, param with
+  | Some seeds, _ -> second (dual_expectation_with_seeds seeds te)
+  | None, Some param -> second (dual_expectation_with_seeds (seeds_of_param param) te)
+  | None, None -> second (dual_expectation_vector_raw te)
 
 let dual_expectation ?param ?seeds te =
   interpret_effects_or_original
