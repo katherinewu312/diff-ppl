@@ -31,7 +31,6 @@ let add_seed = StringMap.add
 let seeds_of_param param = StringMap.singleton param 1.0
 let empty_env seeds = { seeds; bound = StringSet.empty }
 let extend env x = { env with bound = StringSet.add x env.bound }
-let is_bound env x = StringSet.mem x env.bound
 let seed_of env x =
   match StringMap.find_opt x env.seeds with
   | Some seed -> seed
@@ -102,15 +101,14 @@ let dual_binary op e1 e2 =
     bind_ad "_adev_yhat" e2 (fun yhat2 ->
       op yhat1 yhat2))
 
-let ty_of (ty, _, _) = ty
 let effect_of (_, eff, _) = Ast.force_effect eff
 let is_prob_effect eff =
   match Ast.force_effect eff with
   | Prob -> true
   | Pure | EMeta _ -> false
 
-let function_returns_prob te =
-  match Ast.force (ty_of te) with
+let function_returns_prob (ty, _, _) =
+  match Ast.force ty with
   | TFun (_, eff, _) -> is_prob_effect eff
   | _ -> false
 
@@ -178,21 +176,32 @@ and primal env ((ty, _, _) as te) =
   if Util.is_float_ty ty then dual_primal (det_ad env te)
   else det_ad env te
 
+and det_binary env op e1 e2 =
+  dual_binary op (det_ad env e1) (det_ad env e2)
+
+and prob_cps_body env body =
+  let k = Util.fresh_var "_adev_k" in
+  node
+    (Fun
+       ( k
+       , trans env body
+           (fun v -> node (FuncApp (node (Var k), v))) ))
+
 and det_ad env (ty, eff, TAExprNode ae) =
   match ae with
   | Const f -> dual_const f
   | BoolConst b -> bool b
   | Var x ->
       if Util.is_float_ty ty then
-        if is_bound env x then node (Var x)
+        if StringSet.mem x env.bound then node (Var x)
         else dual_seed x (seed_of env x)
       else
         node (Var x)
 
-  | Add (e1, e2) -> dual_binary dual_add (det_ad env e1) (det_ad env e2)
-  | Sub (e1, e2) -> dual_binary dual_sub (det_ad env e1) (det_ad env e2)
-  | Mul (e1, e2) -> dual_binary dual_mul (det_ad env e1) (det_ad env e2)
-  | Div (e1, e2) -> dual_binary dual_div (det_ad env e1) (det_ad env e2)
+  | Add (e1, e2) -> det_binary env dual_add e1 e2
+  | Sub (e1, e2) -> det_binary env dual_sub e1 e2
+  | Mul (e1, e2) -> det_binary env dual_mul e1 e2
+  | Div (e1, e2) -> det_binary env dual_div e1 e2
 
   | Cmp (op, e1, e2, flipped) ->
       node (Cmp (op, primal env e1, primal env e2, flipped))
@@ -216,15 +225,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
 
   | Fun (x, e1) ->
       if is_prob_effect (effect_of e1) then
-        let k = Util.fresh_var "_adev_k" in
-        node
-          (Fun
-             ( x
-             , node
-                 (Fun
-                    ( k
-                    , trans (extend env x) e1
-                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+        node (Fun (x, prob_cps_body (extend env x) e1))
       else
         node (Fun (x, det_ad (extend env x) e1))
   | FuncApp (e1, e2) ->
@@ -235,16 +236,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Fix (f, x, e1) ->
       let env' = extend (extend env f) x in
       if is_prob_effect (effect_of e1) then
-        let k = Util.fresh_var "_adev_k" in
-        node
-          (Fix
-             ( f
-             , x
-             , node
-                 (Fun
-                    ( k
-                    , trans env' e1
-                        (fun v -> node (FuncApp (node (Var k), v))) )) ))
+        node (Fix (f, x, prob_cps_body env' e1))
       else
         node (Fix (f, x, det_ad env' e1))
 
@@ -295,6 +287,10 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | DiscreteCase _ ->
       unsupported "discrete distribution appeared in deterministic AD position"
 
+and trans_binary env op e1 e2 k =
+  trans env e1 (fun d1 ->
+    trans env e2 (fun d2 -> k (op d1 d2)))
+
 and trans env ((_, _, TAExprNode ae) as te) k =
   match ae with
   | DiscreteCase cases ->
@@ -334,18 +330,10 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       trans env e1 (fun b ->
         node (Seq (node (Observe b), k unit_)))
 
-  | Add (e1, e2) ->
-      trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_binary dual_add d1 d2)))
-  | Sub (e1, e2) ->
-      trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_binary dual_sub d1 d2)))
-  | Mul (e1, e2) ->
-      trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_binary dual_mul d1 d2)))
-  | Div (e1, e2) ->
-      trans env e1 (fun d1 ->
-        trans env e2 (fun d2 -> k (dual_binary dual_div d1 d2)))
+  | Add (e1, e2) -> trans_binary env (dual_binary dual_add) e1 e2 k
+  | Sub (e1, e2) -> trans_binary env (dual_binary dual_sub) e1 e2 k
+  | Mul (e1, e2) -> trans_binary env (dual_binary dual_mul) e1 e2 k
+  | Div (e1, e2) -> trans_binary env (dual_binary dual_div) e1 e2 k
 
   | Cmp (op, e1, e2, flipped) ->
       trans env e1 (fun d1 ->
