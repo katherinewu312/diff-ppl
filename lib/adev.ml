@@ -292,7 +292,10 @@ and trans_binary env op e1 e2 k =
     trans env e2 (fun d2 -> k (op d1 d2)))
 
 and trans env ((_, _, TAExprNode ae) as te) k =
-  match ae with
+  if not (is_prob_effect (effect_of te)) then
+    bind_ad "_adev_yhat" (det_ad env te) k
+  else
+    match ae with
   | DiscreteCase cases ->
       let rec bind_cases chats = function
         | [] -> sum_duals (List.rev chats)
@@ -305,12 +308,18 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       bind_cases [] cases
 
   | Let (x, e1, e2) ->
-      trans env e1 (fun dx ->
-        node (Let (x, dx, trans (extend env x) e2 k)))
+      if is_prob_effect (effect_of e1) then
+        trans env e1 (fun dx ->
+          node (Let (x, dx, trans (extend env x) e2 k)))
+      else
+        node (Let (x, det_ad env e1, trans (extend env x) e2 k))
 
   | If (e1, e2, e3) ->
-      trans env e1 (fun cond ->
-        node (If (cond, trans env e2 k, trans env e3 k)))
+      if is_prob_effect (effect_of e1) then
+        trans env e1 (fun cond ->
+          node (If (cond, trans env e2 k, trans env e3 k)))
+      else
+        node (If (det_ad env e1, trans env e2 k, trans env e3 k))
 
   | And (e1, e2) ->
       trans env e1 (fun b1 ->
@@ -324,7 +333,10 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       trans env e1 (fun b1 -> k (node (Not b1)))
 
   | Seq (e1, e2) ->
-      trans env e1 (fun _ -> trans env e2 k)
+      if is_prob_effect (effect_of e1) then
+        trans env e1 (fun _ -> trans env e2 k)
+      else
+        node (Seq (det_ad env e1, trans env e2 k))
 
   | Observe e1 ->
       trans env e1 (fun b ->
