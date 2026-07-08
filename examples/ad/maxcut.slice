@@ -1,0 +1,7 @@
+let z1 = discrete(p1, 1 - p1) in
+let z2 = discrete(p2, 1 - p2) in
+let z3 = discrete(p3, 1 - p3) in
+let e12 = if z1 ==#2 z2 then 0 else 1.0 in
+let e13 = if z1 ==#2 z3 then 0 else 2.0 in
+let e23 = if z2 ==#2 z3 then 0 else 1.5 in
+e12 + e13 + e23
