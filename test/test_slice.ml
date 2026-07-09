@@ -51,6 +51,11 @@ let reverse_dual_raw_after_discretize source =
   let texpr = Slice.Inference.infer transformed in
   Slice.Reverse.dual_expectation_raw texpr
 
+let reverse_runtime_gradient_after_discretize values source =
+  let transformed = transform source in
+  let texpr = Slice.Inference.infer transformed in
+  Slice.Reverse.runtime_gradient_values values texpr
+
 let adev_dual_after_discretize_at param value source =
   let transformed = transform_at param value source in
   let texpr = Slice.Inference.infer transformed in
@@ -112,25 +117,61 @@ let assert_substring_order s before after =
 let eval_float_with_theta theta expr =
   match Slice.Interp.eval [("theta", Slice.Ast.VFloat theta)] expr with
   | Slice.Ast.VFloat f -> f
+  | Slice.Ast.VCons (Slice.Ast.VFloat f, Slice.Ast.VNil) -> f
   | v ->
       assert_failure
         ("expected float result, got: " ^ Slice.Ast.string_of_value v)
 
+let singleton_float = function
+  | Slice.Ast.VFloat f -> Some f
+  | Slice.Ast.VCons (Slice.Ast.VFloat f, Slice.Ast.VNil) -> Some f
+  | _ -> None
+
 let eval_dual_with_theta theta expr =
   match Slice.Interp.eval [("theta", Slice.Ast.VFloat theta)] expr with
-  | Slice.Ast.VPair (Slice.Ast.VFloat primal, Slice.Ast.VFloat tangent) ->
-      (primal, tangent)
+  | Slice.Ast.VPair (Slice.Ast.VFloat primal, tangent) ->
+      (match singleton_float tangent with
+       | Some tangent -> (primal, tangent)
+       | None ->
+           assert_failure
+             ("expected dual float pair, got: "
+              ^ Slice.Ast.string_of_value tangent))
   | v ->
       assert_failure
         ("expected dual float pair, got: " ^ Slice.Ast.string_of_value v)
 
 let eval_dual_with_env env expr =
   match Slice.Interp.eval env expr with
-  | Slice.Ast.VPair (Slice.Ast.VFloat primal, Slice.Ast.VFloat tangent) ->
-      (primal, tangent)
+  | Slice.Ast.VPair (Slice.Ast.VFloat primal, tangent) ->
+      (match singleton_float tangent with
+       | Some tangent -> (primal, tangent)
+       | None ->
+           assert_failure
+             ("expected dual float pair, got: "
+              ^ Slice.Ast.string_of_value tangent))
   | v ->
       assert_failure
         ("expected dual float pair, got: " ^ Slice.Ast.string_of_value v)
+
+let rec float_list_of_value = function
+  | Slice.Ast.VNil -> Some []
+  | Slice.Ast.VCons (Slice.Ast.VFloat f, rest) ->
+      Option.map (fun fs -> f :: fs) (float_list_of_value rest)
+  | _ -> None
+
+let eval_dual_vector_with_env env expr =
+  match Slice.Interp.eval env expr with
+  | Slice.Ast.VPair (Slice.Ast.VFloat primal, gradient) ->
+      (match float_list_of_value gradient with
+       | Some gradient -> (primal, gradient)
+       | None ->
+           assert_failure
+             ("expected dual gradient vector, got: "
+              ^ Slice.Ast.string_of_value gradient))
+  | v ->
+      assert_failure
+        ("expected dual gradient vector pair, got: "
+         ^ Slice.Ast.string_of_value v)
 
 let assert_prob_effect eff =
   match Slice.Ast.force_effect eff with
@@ -169,6 +210,15 @@ let assert_close ?(eps = 1e-9) expected actual =
   assert_equal
     ~printer:string_of_float
     ~cmp:(fun a b -> abs_float (a -. b) < eps)
+    expected
+    actual
+
+let assert_float_list_close ?(eps = 1e-9) expected actual =
+  assert_equal
+    ~printer:(fun xs -> String.concat "; " (List.map string_of_float xs))
+    ~cmp:(fun xs ys ->
+      List.length xs = List.length ys
+      && List.for_all2 (fun x y -> abs_float (x -. y) < eps) xs ys)
     expected
     actual
 
@@ -506,9 +556,22 @@ let test_adev_infers_single_non_theta_seed _ =
 let test_adev_requires_seed_for_multiple_free_float_variables _ =
   let expr = Slice.Parse.parse_expr "foo + bar" in
   let texpr = Slice.Inference.infer expr in
-  assert_raises
-    (Failure "ADEV: multiple free float variables found (bar, foo); please specify at least one dVARIABLE seed, e.g. dbar=1")
-    (fun () -> ignore (Slice.Adev.dual_expectation texpr))
+  let dual = Slice.Adev.dual_expectation texpr in
+  let primal, gradient =
+    eval_dual_vector_with_env
+      [ "foo", Slice.Ast.VFloat 0.4
+      ; "bar", Slice.Ast.VFloat 0.3
+      ]
+      dual
+  in
+  assert_close 0.7 primal;
+  assert_equal
+    ~printer:(fun fs -> "[" ^ String.concat "; " (List.map string_of_float fs) ^ "]")
+    ~cmp:(fun xs ys ->
+      List.length xs = List.length ys
+      && List.for_all2 (fun a b -> abs_float (a -. b) < 1e-9) xs ys)
+    [1.0; 1.0]
+    gradient
 
 let test_adev_allows_one_seed_for_multiple_free_float_variables _ =
   let expr = Slice.Parse.parse_expr "foo + bar" in
@@ -633,6 +696,22 @@ let test_reverse_deterministic_let_uses_direct_style _ =
   assert_close 1.2 primal;
   assert_close 4.0 tangent
 
+let test_reverse_runtime_gradient_deterministic_shared_sum _ =
+  let gradient =
+    reverse_runtime_gradient_after_discretize
+      ["x", 1.0; "y", 1.0; "z", 1.0]
+      "let s = x + y + z in s * s"
+  in
+  assert_float_list_close [6.0; 6.0; 6.0] gradient
+
+let test_reverse_runtime_gradient_discrete_expectation _ =
+  let gradient =
+    reverse_runtime_gradient_after_discretize
+      ["p", 0.25; "x", 2.0]
+      "let b = discrete(p, 1 - p) in if b <#2 1#2 then x else x * x"
+  in
+  assert_float_list_close [-2.0; 3.25] gradient
+
 let test_adev_multiple_explicit_unit_seeds _ =
   let dual =
     adev_dual_with_seeds
@@ -671,17 +750,33 @@ let test_adev_dual_simplifies_polynomial_components _ =
   | Slice.Ast.ExprNode
       (Slice.Ast.Pair
          (Slice.Ast.ExprNode (Slice.Ast.Const primal),
-          Slice.Ast.ExprNode (Slice.Ast.Const tangent))) ->
+          tangent_expr)) ->
+      let tangent =
+        match tangent_expr with
+        | Slice.Ast.ExprNode (Slice.Ast.Const tangent) -> Some tangent
+        | Slice.Ast.ExprNode
+            (Slice.Ast.Cons
+               (Slice.Ast.ExprNode (Slice.Ast.Const tangent),
+                Slice.Ast.ExprNode Slice.Ast.Nil)) ->
+            Some tangent
+        | _ -> None
+      in
       assert_equal
         ~printer:string_of_float
         ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
         1.0
         primal;
-      assert_equal
-        ~printer:string_of_float
-        ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
-        0.0
-        tangent
+      (match tangent with
+       | Some tangent ->
+           assert_equal
+             ~printer:string_of_float
+             ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
+             0.0
+             tangent
+       | None ->
+           assert_failure
+             ("expected scalar or singleton gradient, got: "
+              ^ Slice.Pretty.string_of_expr_plain tangent_expr))
   | e ->
       assert_failure
         ("expected simplified AD dual to be (1, 0), got: "
@@ -883,6 +978,8 @@ let suite =
   ; "test_reverse_enumerates_direct_discrete_comparison" >:: test_reverse_enumerates_direct_discrete_comparison
   ; "test_reverse_discrete_includes_probability_and_body_derivatives" >:: test_reverse_discrete_includes_probability_and_body_derivatives
   ; "test_reverse_deterministic_let_uses_direct_style" >:: test_reverse_deterministic_let_uses_direct_style
+  ; "test_reverse_runtime_gradient_deterministic_shared_sum" >:: test_reverse_runtime_gradient_deterministic_shared_sum
+  ; "test_reverse_runtime_gradient_discrete_expectation" >:: test_reverse_runtime_gradient_discrete_expectation
   ; "test_adev_multiple_explicit_unit_seeds" >:: test_adev_multiple_explicit_unit_seeds
   ; "test_adev_dual_simplifies_polynomial_components" >:: test_adev_dual_simplifies_polynomial_components
   ; "test_probabilistic_function_effect_inference" >:: test_probabilistic_function_effect_inference

@@ -1,0 +1,9 @@
+family,n,expr chars,function ms,forward ms,reverse ms,fwd/function,rev/function,match
+probabilistic_branch,16,432,     8.96,--,    10.77,--,   1.20x,skipped
+probabilistic_branch,32,816,     9.15,--,    10.88,--,   1.19x,skipped
+probabilistic_branch,64,1584,    12.39,--,    12.33,--,   0.99x,skipped
+probabilistic_branch,128,3120,    31.04,--,    31.63,--,   1.02x,skipped
+probabilistic_branch,256,6192,   151.89,--,   161.04,--,   1.06x,skipped
+probabilistic_branch,512,12336,  1152.23,--,  1149.76,--,   1.00x,skipped
+probabilistic_branch,1024,24624,  8099.82,--,  8056.75,--,   0.99x,skipped
+probabilistic_branch,2048,49200, 49310.83,--, 47564.14,--,   0.96x,skipped

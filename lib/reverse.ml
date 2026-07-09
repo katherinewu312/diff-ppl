@@ -758,3 +758,231 @@ let interpret_closed_or_original e =
   match interpret_closed e with
   | Some e' -> e'
   | None -> e
+
+(* Concrete reverse-mode evaluator.
+
+   This path intentionally reuses the source-to-source reverse AD program
+   above.  It substitutes concrete input values into [gradient_raw], then
+   evaluates that generated program with concrete values and real support for
+   the generated [shift]/[reset] nodes. *)
+
+type runtime_value =
+  | RBool of bool
+  | RFloat of float
+  | RPair of runtime_value * runtime_value
+  | RFin of int * int
+  | RClosure of string * expr * runtime_env
+  | RRecClosure of string * string * expr * runtime_env
+  | RCont of (runtime_value -> runtime_value)
+  | RUnit
+  | RNil
+  | RCons of runtime_value * runtime_value
+  | RRef of runtime_value ref
+and runtime_env = (string * runtime_value) list
+
+let runtime_error msg = failwith ("Reverse runtime AD: " ^ msg)
+
+let runtime_lookup x env =
+  match List.assoc_opt x env with
+  | Some v -> v
+  | None -> runtime_error ("unbound variable " ^ x)
+
+let runtime_as_float = function
+  | RFloat f -> f
+  | _ -> runtime_error "expected float"
+
+let runtime_as_bool = function
+  | RBool b -> b
+  | _ -> runtime_error "expected bool"
+
+let runtime_as_fin = function
+  | RFin (k, n) -> (k, n)
+  | _ -> runtime_error "expected finite value"
+
+let runtime_as_ref = function
+  | RRef r -> r
+  | _ -> runtime_error "expected ref"
+
+let runtime_arith op v1 v2 =
+  RFloat (op (runtime_as_float v1) (runtime_as_float v2))
+
+let rec runtime_eval_dist env dist =
+  match dist with
+  | Distr1 (kind, e1) ->
+      let f1 = runtime_as_float (runtime_eval env e1) in
+      (match Distributions.get_cdistr_from_single_arg_kind kind f1 with
+       | Ok dist -> dist
+       | Error msg -> runtime_error msg)
+  | Distr2 (kind, e1, e2) ->
+      let f1 = runtime_as_float (runtime_eval env e1) in
+      let f2 = runtime_as_float (runtime_eval env e2) in
+      (match Distributions.get_cdistr_from_two_arg_kind kind f1 f2 with
+       | Ok dist -> dist
+       | Error msg -> runtime_error msg)
+
+and runtime_eval env e =
+  runtime_eval_cps env e (fun v -> v)
+
+and runtime_eval_cps env (ExprNode e) k =
+  match e with
+  | Const f -> k (RFloat f)
+  | BoolConst b -> k (RBool b)
+  | Var x -> k (runtime_lookup x env)
+  | Let (x, e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps ((x, v1) :: env) e2 k)
+  | Pair (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (RPair (v1, v2))))
+  | First e1 ->
+      runtime_eval_cps env e1 (function
+        | RPair (v1, _) -> k v1
+        | _ -> runtime_error "fst expected a pair")
+  | Second e1 ->
+      runtime_eval_cps env e1 (function
+        | RPair (_, v2) -> k v2
+        | _ -> runtime_error "snd expected a pair")
+  | Ref e1 ->
+      runtime_eval_cps env e1 (fun v -> k (RRef (ref v)))
+  | Deref e1 ->
+      runtime_eval_cps env e1 (fun v -> k !(runtime_as_ref v))
+  | Assign (e1, e2) ->
+      runtime_eval_cps env e1 (fun v_ref ->
+        runtime_eval_cps env e2 (fun v_val ->
+          runtime_as_ref v_ref := v_val;
+          k RUnit))
+  | Seq (e1, e2) ->
+      runtime_eval_cps env e1 (fun _ -> runtime_eval_cps env e2 k)
+  | Add (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (runtime_arith (+.) v1 v2)))
+  | Sub (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (runtime_arith (-.) v1 v2)))
+  | Mul (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (runtime_arith ( *. ) v1 v2)))
+  | Div (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (runtime_arith (/.) v1 v2)))
+  | SpecialFunc (name, args) ->
+      runtime_eval_args env args (fun values ->
+        let floats = List.map runtime_as_float values in
+        match Simplify.special_value name floats with
+        | Some f -> k (RFloat f)
+        | None -> runtime_error ("unknown special function " ^ name))
+  | Cmp (op, e1, e2, _) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 ->
+          let f1 = runtime_as_float v1 in
+          let f2 = runtime_as_float v2 in
+          k (RBool (match op with Lt -> f1 < f2 | Le -> f1 <= f2))))
+  | FinCmp (op, e1, e2, n, _) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 ->
+          let k1, n1 = runtime_as_fin v1 in
+          let k2, n2 = runtime_as_fin v2 in
+          if n1 <> n || n2 <> n then runtime_error "finite comparison modulus mismatch";
+          k (RBool (match op with Lt -> k1 < k2 | Le -> k1 <= k2))))
+  | FinEq (e1, e2, n) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 ->
+          let k1, n1 = runtime_as_fin v1 in
+          let k2, n2 = runtime_as_fin v2 in
+          if n1 <> n || n2 <> n then runtime_error "finite equality modulus mismatch";
+          k (RBool (k1 = k2))))
+  | And (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        if runtime_as_bool v1 then runtime_eval_cps env e2 k else k (RBool false))
+  | Or (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        if runtime_as_bool v1 then k (RBool true) else runtime_eval_cps env e2 k)
+  | Not e1 ->
+      runtime_eval_cps env e1 (fun v1 -> k (RBool (not (runtime_as_bool v1))))
+  | If (e1, e2, e3) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        if runtime_as_bool v1 then runtime_eval_cps env e2 k
+        else runtime_eval_cps env e3 k)
+  | Fun (x, body) -> k (RClosure (x, body, env))
+  | FuncApp (e1, e2) ->
+      runtime_eval_cps env e1 (fun f ->
+        runtime_eval_cps env e2 (fun arg ->
+          match f with
+          | RClosure (x, body, captured_env) ->
+              runtime_eval_cps ((x, arg) :: captured_env) body k
+          | RRecClosure (f_name, x, body, captured_env) ->
+              runtime_eval_cps ((x, arg) :: (f_name, f) :: captured_env) body k
+          | RCont captured -> k (captured arg)
+          | _ -> runtime_error "function application expected a closure"))
+  | Fix (f, x, body) -> k (RRecClosure (f, x, body, env))
+  | FinConst (i, n) -> k (RFin (i, n))
+  | Nil -> k RNil
+  | Cons (e1, e2) ->
+      runtime_eval_cps env e1 (fun v1 ->
+        runtime_eval_cps env e2 (fun v2 -> k (RCons (v1, v2))))
+  | MatchList (e1, e_nil, y, ys, e_cons) ->
+      runtime_eval_cps env e1 (function
+        | RNil -> runtime_eval_cps env e_nil k
+        | RCons (hd, tl) ->
+            runtime_eval_cps ((y, hd) :: (ys, tl) :: env) e_cons k
+        | _ -> runtime_error "list match expected a list")
+  | Unit -> k RUnit
+  | Observe e1 ->
+      runtime_eval_cps env e1 (fun v1 ->
+        if runtime_as_bool v1 then k RUnit else runtime_error "observe failed")
+  | RuntimeError msg -> runtime_error msg
+  | Reset e1 ->
+      let v = runtime_eval_cps env e1 (fun v -> v) in
+      k v
+  | Shift (cont_name, body) ->
+      runtime_eval_cps ((cont_name, RCont k) :: env) body (fun v -> v)
+  | Sample _ ->
+      runtime_error "continuous sampling is not supported by the concrete reverse evaluator"
+  | DiscreteCase _ ->
+      runtime_error "discrete case reached concrete reverse program evaluator"
+  | Cdf (dist, point) ->
+      let dist = runtime_eval_dist env dist in
+      runtime_eval_cps env point (fun v_point ->
+        k (RFloat (Distributions.cdistr_cdf dist (runtime_as_float v_point))))
+  | CdfExpr _ ->
+      runtime_error "CdfExpr is not supported by the concrete reverse evaluator"
+
+and runtime_eval_args env args k =
+  match args with
+  | [] -> k []
+  | arg :: rest ->
+      runtime_eval_cps env arg (fun value ->
+        runtime_eval_args env rest (fun values -> k (value :: values)))
+
+let runtime_value_lookup name values =
+  match List.assoc_opt name values with
+  | Some v -> v
+  | None ->
+      runtime_error
+        ("missing concrete value for free float variable " ^ name)
+
+let rec runtime_float_list = function
+  | RNil -> []
+  | RCons (RFloat f, rest) -> f :: runtime_float_list rest
+  | _ -> runtime_error "gradient result should be a float list"
+
+let subst_runtime_values values e =
+  List.fold_left
+    (fun acc (name, value) -> Simplify.subst_float name value acc)
+    e
+    values
+
+let runtime_gradient_raw values te =
+  gradient_raw te |> subst_runtime_values values
+
+let runtime_gradient_values values te =
+  let params = free_float_params te in
+  List.iter (fun name -> ignore (runtime_value_lookup name values)) params;
+  runtime_gradient_raw values te
+  |> runtime_eval []
+  |> runtime_float_list
+
+let runtime_gradient values te =
+  runtime_gradient_values values te
+  |> List.map const
+  |> Util.expr_list

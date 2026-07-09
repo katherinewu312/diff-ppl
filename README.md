@@ -76,6 +76,7 @@ The executable accepts one input file, e.g.:
 ```sh
 dune exec diff_ppl -- FILE.slice
 dune exec diff_ppl -- --print-all FILE.slice
+dune exec diff_ppl -- --eval FILE.slice
 dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
 dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
@@ -89,6 +90,7 @@ Supports:
 
 * plain discretization
 * `--print-all` for source/normalized/typed/discretized output
+* `--eval` for evaluation/expectation of the program
 * `--ad` for simplified gradient output
 * `--print-all --ad` for raw + simplified gradient output
 * `--ad-dual` for simplified dual output
@@ -97,12 +99,11 @@ Supports:
 * `--at PARAM=VALUE` for concrete evaluation for AD modes
 * `PARAM=VALUE` for concrete substitution and `dPARAM=SEED` for explicit seeding
 
-For forward and reverse modes, when no explicit `dPARAM=SEED` assignments are
-provided, `--ad` prints the full gradient vector for all free float input
-variables, and `--ad-dual` prints `(expected_value, gradient_vector)`. The
-vector entries are ordered by variable name and printed as
-`(dPARAM = derivative; ...)`. If explicit `dPARAM=SEED` assignments are
-provided, AD keeps the old scalar directional-derivative behavior: `--ad`
+For forward mode, when no explicit `dPARAM=SEED` assignments are provided,
+`--ad` prints the full gradient vector for all free float input variables, and
+`--ad-dual` prints `(expected_value, gradient_vector)`. The vector entries are
+ordered by variable name. If explicit `dPARAM=SEED` assignments are provided,
+forward mode gives a scalar directional derivative: `--ad`
 prints the seeded tangent and `--ad-dual` prints `(primal, tangent)`.
 With `--print-all`, AD modes also print the raw source-to-source AD program
 before the simplified AD output.
@@ -117,9 +118,8 @@ concrete point.
 AD modes can also accept bare assignments before the input file. `PARAM=VALUE`
 substitutes a concrete value, and `dPARAM=SEED` sets the AD seed for `PARAM`.
 If explicit `dPARAM=SEED` assignments are provided, unspecified variables get
-seed `0`. In no-seed mode, forward AD seeds each free float variable one at a
-time, while reverse AD uses one scalar-output reverse pass to produce the same
-gradient vector.
+seed `0`. In forward mode, if no explicit seeds are provided, all free float
+variables are seeded one at a time to produce the gradient vector.
 
 ## Project Layout
 

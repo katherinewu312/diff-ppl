@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--forward | --reverse] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--eval] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -18,12 +18,14 @@ let print_section title body =
 
 type mode =
   | Discretize
+  | Evaluate
   | AdGradient
   | AdDual
 
 type ad_mode =
   | Forward
   | Reverse
+  | ReverseRuntime
 
 type ad_output =
   { raw : Slice.Ast.expr
@@ -112,6 +114,7 @@ let finalize_simplified_ad ad_mode values e =
   match ad_mode with
   | Forward -> simplified
   | Reverse -> Slice.Reverse.interpret_closed_or_original simplified
+  | ReverseRuntime -> simplified
 
 let free_float_var_names te =
   Slice.Util.free_float_vars te
@@ -141,13 +144,25 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
   let ad_output =
     match mode with
     | Discretize -> None
+    | Evaluate ->
+        let discretized_texpr = Slice.Inference.infer transformed in
+        let values =
+          List.map
+            (fun { name; value; _ } -> (name, value))
+            ad_args.values
+        in
+        Some
+          { raw = apply_values_raw ad_args.values (Slice.Eval.raw discretized_texpr)
+          ; simplified = Slice.Eval.eval ~values discretized_texpr
+          ; vector_output = NoVector
+          }
     | AdGradient ->
         let discretized_texpr = Slice.Inference.infer transformed in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
-          | Forward, false | Reverse, false ->
+          | Forward, false | Reverse, false | ReverseRuntime, false ->
               GradientVector (free_float_var_names discretized_texpr)
-          | Forward, true | Reverse, true -> NoVector
+          | Forward, true | Reverse, true | ReverseRuntime, true -> NoVector
         in
         let raw, simplified =
           match ad_mode with
@@ -157,6 +172,21 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           | Reverse ->
               ( Slice.Reverse.gradient_raw ?seeds:reverse_seeds discretized_texpr
               , Slice.Reverse.gradient ?seeds:reverse_seeds discretized_texpr )
+          | ReverseRuntime ->
+              if ad_args.explicit_seeds then
+                failwith "Reverse runtime AD currently supports only full-gradient mode";
+              let values =
+                List.map
+                  (fun { name; value; _ } -> (name, value))
+                  ad_args.values
+              in
+              let gradient =
+                Slice.Reverse.runtime_gradient values discretized_texpr
+              in
+              let raw =
+                Slice.Reverse.runtime_gradient_raw values discretized_texpr
+              in
+              (raw, gradient)
         in
         let raw = apply_values_raw ad_args.values raw in
         Some
@@ -171,6 +201,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           | Forward, false | Reverse, false ->
               DualGradientVector (free_float_var_names discretized_texpr)
           | Forward, true | Reverse, true -> NoVector
+          | ReverseRuntime, _ ->
+              failwith "Reverse runtime AD currently supports --ad, not --ad-dual"
         in
         let raw, simplified =
           match ad_mode with
@@ -180,6 +212,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           | Reverse ->
               ( Slice.Reverse.dual_expectation_raw ?seeds:reverse_seeds discretized_texpr
               , Slice.Reverse.dual_expectation ?seeds:reverse_seeds discretized_texpr )
+          | ReverseRuntime ->
+              failwith "Reverse runtime AD currently supports --ad, not --ad-dual"
         in
         let raw = apply_values_raw ad_args.values raw in
         Some
@@ -205,10 +239,12 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
             match ad_mode with
             | Forward -> "forward"
             | Reverse -> "reverse"
+            | ReverseRuntime -> "reverse runtime"
           in
           let raw_title, simplified_title =
             match mode with
             | Discretize -> "Raw output program", "Output program"
+            | Evaluate -> "Raw evaluation program", "Evaluation result"
             | AdGradient -> "Raw " ^ ad_name ^ " AD gradient program", "Simplified " ^ ad_name ^ " AD gradient program"
             | AdDual -> "Raw " ^ ad_name ^ " AD dual program", "Simplified " ^ ad_name ^ " AD dual program"
           in
@@ -229,10 +265,15 @@ let () =
          | None -> usage ())
     | "--print-all" :: rest ->
         parse_args true mode ad_mode assignments filename rest
+    | "--eval" :: rest ->
+        if mode <> Discretize then usage ();
+        parse_args print_all Evaluate ad_mode assignments filename rest
     | "--forward" :: rest ->
         parse_args print_all mode Forward assignments filename rest
     | "--reverse" :: rest ->
         parse_args print_all mode Reverse assignments filename rest
+    | "--reverse-runtime" :: rest ->
+        parse_args print_all mode ReverseRuntime assignments filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
         parse_args print_all AdGradient ad_mode assignments filename rest
