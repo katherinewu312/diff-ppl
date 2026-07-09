@@ -28,14 +28,14 @@ wall-clock time and AD/function runtime ratios over the requested number of
 repeats.
 
 For each family, it writes a log-scale forward/reverse timing plot to the
-repository root.
+results/ directory.
 
 Use --modes forward,reverse to choose which AD modes to time. Use --jobs N to
 run independent family/size workloads concurrently. Each workload still runs
 its requested function/AD timings sequentially.
 
-It writes table-shaped CSV results to results_symbolic.csv by default, or
-results_concrete.csv when --reverse-runtime is used.
+It writes table-shaped CSV results to results/results_symbolic.csv by default,
+or results/results_concrete.csv when --reverse-runtime is used.
 
 Usage:
 $ python3 benchmark.py [-h] [--ns NS] [--families FAMILIES] [--ad-output {ad,ad-dual}] [--modes MODES] [--reverse-runtime] [--repeats REPEATS] [--warmups WARMUPS] [--timeout TIMEOUT] [--jobs JOBS] [--keep-programs KEEP_PROGRAMS]
@@ -62,6 +62,7 @@ from typing import Callable, Iterable, Optional
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EXE = REPO_ROOT / "_build" / "default" / "bin" / "main.exe"
+RESULTS_DIR = REPO_ROOT / "results"
 TABLE_HEADERS = [
     "family",
     "n",
@@ -436,7 +437,7 @@ def print_table(rows: list[dict[str, object]]) -> None:
 
 def table_csv_path(reverse_runtime: bool) -> Path:
     name = "results_concrete.csv" if reverse_runtime else "results_symbolic.csv"
-    return REPO_ROOT / name
+    return RESULTS_DIR / name
 
 
 def write_table_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -508,7 +509,8 @@ def plot_family_times(family: Family, rows: list[dict[str, object]]) -> Path:
     ax.legend()
     fig.tight_layout()
 
-    path = REPO_ROOT / f"benchmark_{family.name}.png"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"benchmark_{family.name}.png"
     fig.savefig(path, dpi=160)
     plt.close(fig)
     return path
@@ -584,7 +586,8 @@ def main() -> int:
         type=Path,
         help=(
             "write table-shaped results to this CSV path "
-            "(default: results_symbolic.csv, or results_concrete.csv with --reverse-runtime)"
+            "(default: results/results_symbolic.csv, or "
+            "results/results_concrete.csv with --reverse-runtime)"
         ),
     )
     parser.add_argument(
