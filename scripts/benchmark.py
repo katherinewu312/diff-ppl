@@ -19,7 +19,7 @@ The script generates 5 scalar output programs:
 For each program and size n, it times expectation evaluation plus the requested
 full-gradient AD modes:
 
-  diff_ppl --eval ...
+  diff_ppl --expect ...
   diff_ppl --forward --ad ...
   diff_ppl --reverse --ad ...
 
@@ -347,7 +347,7 @@ def run_benchmark_workload(
 ) -> BenchmarkResult:
     function_s, _ = run_repeated(
         exe,
-        ["--eval"],
+        ["--expect"],
         workload.values,
         workload.program,
         repeats,

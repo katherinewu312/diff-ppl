@@ -13,13 +13,13 @@
 open Ast
 
 module StringSet = Util.StringSet
-module StringMap = Adev.StringMap
+module StringMap = Forward.StringMap
 
-type seeds = Adev.seeds
+type seeds = Forward.seeds
 
-let no_seeds = Adev.no_seeds
-let add_seed = Adev.add_seed
-let seeds_of_param = Adev.seeds_of_param
+let no_seeds = Forward.no_seeds
+let add_seed = Forward.add_seed
+let seeds_of_param = Forward.seeds_of_param
 
 let node e = ExprNode e
 let const = Simplify.mk_const

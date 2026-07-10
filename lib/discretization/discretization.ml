@@ -652,7 +652,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
   in
   aux e
 
-let discretize_top ?cut_order_at (e : texpr) : expr =
+let discretize_top ?cut_order_at (e : Cut_inference.cut_annotated_expr) : expr =
   let (return_type, _, _) = e in
   Ast.set_cut_bags_to_top return_type;
   discretize ?cut_order_at e

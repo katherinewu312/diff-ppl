@@ -1,4 +1,4 @@
-(* ADEV-style forward-mode AD for already-discretized Slice programs.
+(* Forward-style forward-mode AD for already-discretized Slice programs.
 
    Deterministic terms are transformed using ordinary dual numbers,
    represented in the existing AST as pairs [(primal, tangent)].
@@ -12,7 +12,7 @@
                let bhat_i = Dexpect[v_i] k in
                phat_i *D bhat_i
 
-   This is the n-ary analog of ADEV's flip_enum rule. *)
+   This is the n-ary analog of Forward's flip_enum rule. *)
 
 open Ast
 
@@ -47,9 +47,9 @@ let add = Simplify.mk_add
 let sub = Simplify.mk_sub
 let mul = Simplify.mk_mul
 let div = Simplify.mk_div
-let runtime_error msg = node (RuntimeError ("ADEV: " ^ msg))
+let runtime_error msg = node (RuntimeError ("Forward: " ^ msg))
 
-let unsupported msg = failwith ("ADEV: " ^ msg)
+let unsupported msg = failwith ("Forward: " ^ msg)
 
 let bind_ad hint rhs body =
   let x = Util.fresh_var hint in
@@ -97,8 +97,8 @@ let rec sum_duals = function
   | x :: xs -> dual_add x (sum_duals xs)
 
 let dual_binary op e1 e2 =
-  bind_ad "_adev_yhat" e1 (fun yhat1 ->
-    bind_ad "_adev_yhat" e2 (fun yhat2 ->
+  bind_ad "_forward_yhat" e1 (fun yhat1 ->
+    bind_ad "_forward_yhat" e2 (fun yhat2 ->
       op yhat1 yhat2))
 
 let effect_of (_, eff, _) = Ast.force_effect eff
@@ -180,7 +180,7 @@ and det_binary env op e1 e2 =
   dual_binary op (det_ad env e1) (det_ad env e2)
 
 and prob_cps_body env body =
-  let k = Util.fresh_var "_adev_k" in
+  let k = Util.fresh_var "_forward_k" in
   node
     (Fun
        ( k
@@ -258,9 +258,9 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Unit -> unit_
 
   | Cdf (dist_exp, point) ->
-      Cdf_ad.cdf (sample_dual env dist_exp) (det_ad env point)
+      Cdf_derivative.cdf (sample_dual env dist_exp) (det_ad env point)
   | CdfExpr (kernel, point) ->
-      Cdf_ad.cdf_expr (cdf_kernel_dual env kernel) (det_ad env point)
+      Cdf_derivative.cdf_expr (cdf_kernel_dual env kernel) (det_ad env point)
   | SpecialFunc (name, args) ->
       let dargs = List.map (det_ad env) args in
       let primal_args = List.map dual_primal dargs in
@@ -283,7 +283,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
   | Sample _ ->
-      unsupported "continuous Sample remained in program; run discretization before ADEV"
+      unsupported "continuous Sample remained in program; run discretization before Forward"
   | DiscreteCase _ ->
       unsupported "discrete distribution appeared in deterministic AD position"
 
@@ -293,16 +293,16 @@ and trans_binary env op e1 e2 k =
 
 and trans env ((_, _, TAExprNode ae) as te) k =
   if not (is_prob_effect (effect_of te)) then
-    bind_ad "_adev_yhat" (det_ad env te) k
+    bind_ad "_forward_yhat" (det_ad env te) k
   else
     match ae with
   | DiscreteCase cases ->
       let rec bind_cases chats = function
         | [] -> sum_duals (List.rev chats)
         | (branch, prob) :: rest ->
-            bind_ad "_adev_phat" (det_ad env prob) (fun phat ->
-              bind_ad "_adev_bhat" (trans env branch k) (fun bhat ->
-                bind_ad "_adev_chat" (dual_mul phat bhat) (fun chat ->
+            bind_ad "_forward_phat" (det_ad env prob) (fun phat ->
+              bind_ad "_forward_bhat" (trans env branch k) (fun bhat ->
+                bind_ad "_forward_chat" (dual_mul phat bhat) (fun chat ->
                   bind_cases (chat :: chats) rest)))
       in
       bind_cases [] cases
@@ -371,7 +371,7 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       trans env e1 (fun d1 ->
         trans env e2 (fun d2 ->
           if function_returns_prob e1 then
-            let x = Util.fresh_var "_adev_arg" in
+            let x = Util.fresh_var "_forward_arg" in
             let cont = node (Fun (x, k (node (Var x)))) in
             node (FuncApp (node (FuncApp (d1, d2)), cont))
           else
@@ -405,7 +405,7 @@ and trans env ((_, _, TAExprNode ae) as te) k =
       unsupported "shift/reset are internal reverse-AD constructs"
 
   | Sample _ ->
-      unsupported "continuous Sample remained in program; run discretization before ADEV"
+      unsupported "continuous Sample remained in program; run discretization before Forward"
 
 (* discretized program
 -> raw AD dual program

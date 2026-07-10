@@ -1,0 +1,7 @@
+family,n,expr chars,function ms,forward ms,reverse ms,fwd/function,rev/function,match
+dense_linear_sum,16,109,    14.70,    10.89,    14.80,   0.74x,   1.01x,yes
+dense_linear_sum,32,221,    14.32,    29.28,    10.34,   2.05x,   0.72x,yes
+dense_linear_sum,64,445,    10.52,   215.68,    14.85,  20.50x,   1.41x,yes
+dense_linear_sum,128,893,    20.50,  1969.86,    22.47,  96.08x,   1.10x,yes
+dense_linear_sum,256,1789,    48.81, 18841.29,    65.12, 386.03x,   1.33x,yes
+dense_linear_sum,512,3581,   321.27,147649.16,   308.63, 459.58x,   0.96x,yes

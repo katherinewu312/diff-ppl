@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--eval] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--expect] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -45,7 +45,7 @@ type assignment =
 
 type ad_args =
   { values : assignment list
-  ; seeds : Slice.Adev.seeds option
+  ; seeds : Slice.Forward.seeds option
   ; explicit_seeds : bool
   ; cut_order_at : Slice.Cut_order.at option
   }
@@ -84,13 +84,13 @@ let parse_ad_args assignments =
   let seeds =
     match seed_values, at_values with
     | [], [] -> None
-    | [], { name; _ } :: _ -> Some (Slice.Adev.seeds_of_param name)
+    | [], { name; _ } :: _ -> Some (Slice.Forward.seeds_of_param name)
     | _ ->
         Some
           (List.fold_left
              (fun acc { name; value; _ } ->
-                Slice.Adev.add_seed (seed_var_name name) value acc)
-             Slice.Adev.no_seeds
+                Slice.Forward.add_seed (seed_var_name name) value acc)
+             Slice.Forward.no_seeds
              seed_values)
   in
   let cut_order_at =
@@ -126,12 +126,17 @@ let format_ad_expr vector_output e =
   | GradientVector labels, _ -> Slice.Pretty.string_of_labeled_expr_list labels e
   | DualGradientVector labels, _ -> Slice.Pretty.string_of_dual_with_labeled_expr_list labels e
 
+let infer_with_cuts expr =
+  expr
+  |> Slice.Inference.infer
+  |> Slice.Cut_inference.analyze
+
 let run ~print_all ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
   let normalized = Slice.Normalize.normalize expr in
-  let texpr = Slice.Inference.infer normalized in
+  let texpr = infer_with_cuts normalized in
   let cut_order_at = ad_args.cut_order_at in
   let seeds = ad_args.seeds in
   let forward_seeds =
@@ -145,19 +150,19 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     match mode with
     | Discretize -> None
     | Evaluate ->
-        let discretized_texpr = Slice.Inference.infer transformed in
+        let discretized_texpr = infer_with_cuts transformed in
         let values =
           List.map
             (fun { name; value; _ } -> (name, value))
             ad_args.values
         in
         Some
-          { raw = apply_values_raw ad_args.values (Slice.Eval.raw discretized_texpr)
-          ; simplified = Slice.Eval.eval ~values discretized_texpr
+          { raw = apply_values_raw ad_args.values (Slice.Expect.raw discretized_texpr)
+          ; simplified = Slice.Expect.eval ~values discretized_texpr
           ; vector_output = NoVector
           }
     | AdGradient ->
-        let discretized_texpr = Slice.Inference.infer transformed in
+        let discretized_texpr = infer_with_cuts transformed in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
           | Forward, false | Reverse, false | ReverseRuntime, false ->
@@ -167,8 +172,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         let raw, simplified =
           match ad_mode with
           | Forward ->
-              ( Slice.Adev.gradient_raw ?seeds:forward_seeds discretized_texpr
-              , Slice.Adev.gradient ?seeds:forward_seeds discretized_texpr )
+              ( Slice.Forward.gradient_raw ?seeds:forward_seeds discretized_texpr
+              , Slice.Forward.gradient ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
               ( Slice.Reverse.gradient_raw ?seeds:reverse_seeds discretized_texpr
               , Slice.Reverse.gradient ?seeds:reverse_seeds discretized_texpr )
@@ -195,7 +200,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           ; vector_output
           }
     | AdDual ->
-        let discretized_texpr = Slice.Inference.infer transformed in
+        let discretized_texpr = infer_with_cuts transformed in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
           | Forward, false | Reverse, false ->
@@ -207,8 +212,8 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
         let raw, simplified =
           match ad_mode with
           | Forward ->
-              ( Slice.Adev.dual_expectation_raw ?seeds:forward_seeds discretized_texpr
-              , Slice.Adev.dual_expectation ?seeds:forward_seeds discretized_texpr )
+              ( Slice.Forward.dual_expectation_raw ?seeds:forward_seeds discretized_texpr
+              , Slice.Forward.dual_expectation ?seeds:forward_seeds discretized_texpr )
           | Reverse ->
               ( Slice.Reverse.dual_expectation_raw ?seeds:reverse_seeds discretized_texpr
               , Slice.Reverse.dual_expectation ?seeds:reverse_seeds discretized_texpr )
@@ -265,7 +270,7 @@ let () =
          | None -> usage ())
     | "--print-all" :: rest ->
         parse_args true mode ad_mode assignments filename rest
-    | "--eval" :: rest ->
+    | "--expect" :: rest ->
         if mode <> Discretize then usage ();
         parse_args print_all Evaluate ad_mode assignments filename rest
     | "--forward" :: rest ->

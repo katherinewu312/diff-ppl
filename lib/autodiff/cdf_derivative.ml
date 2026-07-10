@@ -1,7 +1,7 @@
 open Ast
 
 let node e = ExprNode e
-let runtime_error msg = node (RuntimeError ("ADEV: " ^ msg))
+let runtime_error msg = node (RuntimeError ("Forward: " ^ msg))
 
 let const = Simplify.mk_const
 let add = Simplify.mk_add

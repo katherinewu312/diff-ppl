@@ -1,3 +1,5 @@
+(* Evaluates / computes the expectation of a program. Specify --expect in diff_ppl. *)
+
 open Ast
 
 module StringSet = Util.StringSet
@@ -50,12 +52,12 @@ let rec det_sample env = function
   | Distr2 (kind, e1, e2) -> Distr2 (kind, det env e1, det env e2)
 
 and cdf_primal dist point =
-  Cdf_ad.cdf dist point
-  |> Cdf_ad.dual_primal
+  Cdf_derivative.cdf dist point
+  |> Cdf_derivative.dual_primal
 
 and cdf_expr_primal kernel point =
-  Cdf_ad.cdf_expr kernel point
-  |> Cdf_ad.dual_primal
+  Cdf_derivative.cdf_expr kernel point
+  |> Cdf_derivative.dual_primal
 
 and prob_cps_body env body =
   let k = Util.fresh_var "_eval_k" in

@@ -76,7 +76,7 @@ The executable accepts one input file, e.g.:
 ```sh
 dune exec diff_ppl -- FILE.slice
 dune exec diff_ppl -- --print-all FILE.slice
-dune exec diff_ppl -- --eval FILE.slice
+dune exec diff_ppl -- --expect FILE.slice
 dune exec diff_ppl -- --ad FILE.slice
 dune exec diff_ppl -- --ad-dual FILE.slice
 dune exec diff_ppl -- --ad-dual --at theta=0.3 FILE.slice
@@ -90,7 +90,7 @@ Supports:
 
 * plain discretization
 * `--print-all` for source/normalized/typed/discretized output
-* `--eval` for evaluation/expectation of the program
+* `--expect` for evaluation/expectation of the program
 * `--ad` for simplified gradient output
 * `--print-all --ad` for raw + simplified gradient output
 * `--ad-dual` for simplified dual output

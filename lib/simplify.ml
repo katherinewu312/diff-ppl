@@ -36,7 +36,7 @@ match nil with ... -> nil branch
 match h :: t with ... -> cons branch with h/t substituted
 
 The separate [algebraic] pass below additionally normalizes polynomial
-float expressions so post-ADEV primal/tangent components can combine
+float expressions so post-Forward primal/tangent components can combine
 like terms:
 (theta * theta) + ((1 - theta) * (theta + 1)) -> 1
 
@@ -96,7 +96,7 @@ let has_prefix s prefix =
   let n = String.length prefix in
   String.length s >= n && String.sub s 0 n = prefix
 
-let generated_ad_name x = has_prefix x "_adev_"
+let generated_ad_name x = has_prefix x "_forward_"
 
 let mk_add a b =
   match const_value a, const_value b with
