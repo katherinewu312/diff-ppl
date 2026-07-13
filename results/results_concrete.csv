@@ -1,7 +1,6 @@
 family,n,expr chars,function ms,forward ms,reverse ms,fwd/function,rev/function,match
-dense_linear_sum,16,109,    14.70,    10.89,    14.80,   0.74x,   1.01x,yes
-dense_linear_sum,32,221,    14.32,    29.28,    10.34,   2.05x,   0.72x,yes
-dense_linear_sum,64,445,    10.52,   215.68,    14.85,  20.50x,   1.41x,yes
-dense_linear_sum,128,893,    20.50,  1969.86,    22.47,  96.08x,   1.10x,yes
-dense_linear_sum,256,1789,    48.81, 18841.29,    65.12, 386.03x,   1.33x,yes
-dense_linear_sum,512,3581,   321.27,147649.16,   308.63, 459.58x,   0.96x,yes
+discrete_chain,1,86,     8.13,--,     8.52,--,   1.05x,skipped
+discrete_chain,2,173,     7.61,--,     8.52,--,   1.12x,skipped
+discrete_chain,4,347,     8.92,--,     8.07,--,   0.90x,skipped
+discrete_chain,8,695,    18.40,--,    16.22,--,   0.88x,skipped
+discrete_chain,16,1425, 16064.14,--,  3414.88,--,   0.21x,skipped
