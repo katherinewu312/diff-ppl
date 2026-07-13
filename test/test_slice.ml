@@ -227,6 +227,74 @@ let assert_float_list_close ?(eps = 1e-9) expected actual =
     expected
     actual
 
+let symbolically_finalize expression =
+  expression
+  |> Slice.Simplify.algebraic
+  |> Slice.Simplify.evaluate_symbolically_or_original
+
+let assert_no_administrative_syntax expression =
+  let plain = Slice.Pretty.string_of_expr_plain expression in
+  List.iter
+    (fun syntax ->
+       assert_bool
+         ("symbolically evaluated expression still contains " ^ syntax)
+         (not (contains_substring plain syntax)))
+    [ "let "; "fst "; "snd "; "ref "; "shift "; "reset " ]
+
+let test_symbolic_evaluator_reduces_nontrivial_lets _ =
+  let expression =
+    Slice.Parse.parse_expr
+      "let a = (x * x, 2 * x) in \
+       let b = (fst a + y, snd a) in \
+       b"
+  in
+  let evaluated =
+    match Slice.Simplify.evaluate_symbolically expression with
+    | Some evaluated -> evaluated
+    | None -> assert_failure "symbolic evaluation unexpectedly failed"
+  in
+  assert_no_administrative_syntax evaluated;
+  let primal, tangent =
+    eval_dual_with_env
+      [ "x", Slice.Ast.VFloat 2.0; "y", Slice.Ast.VFloat 3.0 ]
+      evaluated
+  in
+  assert_close 7.0 primal;
+  assert_close 4.0 tangent
+
+let test_forward_and_reverse_share_symbolic_finalization _ =
+  let source =
+    "let b1 = discrete(p, 1 - p) in \
+     let s1 = if b1 <#2 1#2 then x1 else x1 * x1 in \
+     let b2 = discrete(p, 1 - p) in \
+     let s2 = if b2 <#2 1#2 then s1 + x2 else s1 * x2 in \
+     s2"
+  in
+  let forward =
+    forward_dual_raw_after_discretize source |> symbolically_finalize
+  in
+  let reverse =
+    reverse_dual_raw_after_discretize source |> symbolically_finalize
+  in
+  assert_no_administrative_syntax forward;
+  assert_no_administrative_syntax reverse;
+  let environment =
+    [ "p", Slice.Ast.VFloat 0.3
+    ; "x1", Slice.Ast.VFloat 2.0
+    ; "x2", Slice.Ast.VFloat 3.0
+    ]
+  in
+  let forward_primal, forward_gradient =
+    eval_dual_vector_with_env environment forward
+  in
+  let reverse_primal, reverse_gradient =
+    eval_dual_vector_with_env environment reverse
+  in
+  assert_close 9.06 forward_primal;
+  assert_float_list_close [ -8.6; 7.44; 2.68 ] forward_gradient;
+  assert_close forward_primal reverse_primal;
+  assert_float_list_close forward_gradient reverse_gradient
+
 let cdf_point = function
   | Slice.Ast.ExprNode (Slice.Ast.Cdf (_, point))
   | Slice.Ast.ExprNode (Slice.Ast.CdfExpr (_, point)) -> Some point
@@ -956,7 +1024,11 @@ let test_discretize_at_orders_theta_before_theta_plus_one _ =
 
 let suite =
   "Slice transformation tests" >:::
-  [ "test_typing" >:: test_typing
+  [ "test_symbolic_evaluator_reduces_nontrivial_lets"
+      >:: test_symbolic_evaluator_reduces_nontrivial_lets
+  ; "test_forward_and_reverse_share_symbolic_finalization"
+      >:: test_forward_and_reverse_share_symbolic_finalization
+  ; "test_typing" >:: test_typing
   ; "test_discretizes_uniform_comparison" >:: test_discretizes_uniform_comparison
   ; "test_forward_enumerates_direct_discrete_comparison" >:: test_forward_enumerates_direct_discrete_comparison
   ; "test_forward_includes_probability_and_body_derivatives" >:: test_forward_includes_probability_and_body_derivatives

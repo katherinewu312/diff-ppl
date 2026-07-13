@@ -3,8 +3,7 @@ open Ast
 module StringMap = Map.Make(String)
 module StringSet = Set.Make(String)
 
-(* This is very preliminary so far. It simplies raw AD dual programs, giving the output tuple (expected, derivative).
-So far:
+(* The local pass performs the following rewrites:
 
 Constant-folds arithmetic:
 1 + 2 -> 3
@@ -806,3 +805,318 @@ let algebraic e =
     | Distr2 (kind, e1, e2) -> Distr2 (kind, go e1, go e2)
   in
   go e
+
+(** Symbolic evaluation of deterministic administrative programs.
+
+    Unlike [expr] and [algebraic], this pass evaluates nontrivial let-bound
+    values through an environment.  It therefore removes administrative
+    lets, pairs, projections, references, and control operators without first
+    requiring their right-hand sides to be syntactically inlineable.  Free
+    variables are residualized as symbolic expressions.
+
+    Evaluation is best-effort.  Programs that require choosing an unknown
+    symbolic branch, contain residual probabilistic operations, or otherwise
+    cannot be evaluated are reported as [None] by [evaluate_symbolically]. *)
+
+exception Cannot_symbolically_evaluate of string
+
+type symbolic_value =
+  | SExpr of expr
+  | SPair of symbolic_value * symbolic_value
+  | SClosure of string * expr * symbolic_env
+  | SRecClosure of string * string * expr * symbolic_env
+  | SRef of symbolic_value ref
+  | SCont of (symbolic_value -> symbolic_value)
+  | SUnit
+  | SNil
+  | SCons of symbolic_value * symbolic_value
+and symbolic_env = (string * symbolic_value) list
+
+let rec symbolic_lookup name = function
+  | [] -> SExpr (node (Var name))
+  | (bound_name, value) :: rest ->
+      if name = bound_name then value else symbolic_lookup name rest
+
+let rec symbolic_expr = function
+  | SExpr expression -> expression
+  | SPair (left, right) -> mk_pair (symbolic_expr left) (symbolic_expr right)
+  | SRef reference -> node (Ref (symbolic_expr !reference))
+  | SUnit -> node Unit
+  | SNil -> node Nil
+  | SCons (head, tail) -> node (Cons (symbolic_expr head, symbolic_expr tail))
+  | SClosure (argument, body, []) -> node (Fun (argument, body))
+  | SClosure _ ->
+      raise
+        (Cannot_symbolically_evaluate
+           "cannot reify closure with captured environment")
+  | SRecClosure (function_name, argument, body, []) ->
+      node (Fix (function_name, argument, body))
+  | SRecClosure _ ->
+      raise
+        (Cannot_symbolically_evaluate
+           "cannot reify recursive closure with captured environment")
+  | SCont _ ->
+      raise
+        (Cannot_symbolically_evaluate "cannot reify captured continuation")
+
+let symbolic_bool = function
+  | SExpr (ExprNode (BoolConst value)) -> Some value
+  | _ -> None
+
+let symbolic_arithmetic operation left right =
+  SExpr (operation (symbolic_expr left) (symbolic_expr right))
+
+let rec symbolic_sample environment = function
+  | Distr1 (kind, argument) ->
+      Distr1 (kind, symbolic_expr (symbolic_eval environment argument))
+  | Distr2 (kind, left, right) ->
+      Distr2
+        ( kind
+        , symbolic_expr (symbolic_eval environment left)
+        , symbolic_expr (symbolic_eval environment right) )
+
+and symbolic_eval environment expression =
+  symbolic_eval_cps environment expression (fun value -> value)
+
+and symbolic_eval_cps environment (ExprNode expression) continuation =
+  match expression with
+  | Const value -> continuation (SExpr (mk_const value))
+  | BoolConst value -> continuation (SExpr (mk_bool value))
+  | Var name -> continuation (symbolic_lookup name environment)
+  | Let (name, bound, body) ->
+      symbolic_eval_cps environment bound (fun value ->
+        symbolic_eval_cps ((name, value) :: environment) body continuation)
+  | Pair (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation (SPair (left_value, right_value))))
+  | First value ->
+      symbolic_eval_cps environment value (function
+        | SPair (left, _) -> continuation left
+        | symbolic ->
+            continuation (SExpr (mk_first (symbolic_expr symbolic))))
+  | Second value ->
+      symbolic_eval_cps environment value (function
+        | SPair (_, right) -> continuation right
+        | symbolic ->
+            continuation (SExpr (mk_second (symbolic_expr symbolic))))
+  | Ref value ->
+      symbolic_eval_cps environment value (fun symbolic ->
+        continuation (SRef (ref symbolic)))
+  | Deref value ->
+      symbolic_eval_cps environment value (function
+        | SRef reference -> continuation !reference
+        | symbolic ->
+            continuation (SExpr (node (Deref (symbolic_expr symbolic)))))
+  | Assign (target, value) ->
+      symbolic_eval_cps environment target (fun target_value ->
+        symbolic_eval_cps environment value (fun assigned_value ->
+          match target_value with
+          | SRef reference ->
+              reference := assigned_value;
+              continuation SUnit
+          | _ ->
+              raise
+                (Cannot_symbolically_evaluate
+                   "assignment target is not a reference")))
+  | Seq (first, second) ->
+      symbolic_eval_cps environment first (fun _ ->
+        symbolic_eval_cps environment second continuation)
+  | Add (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (symbolic_arithmetic mk_add left_value right_value)))
+  | Sub (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (symbolic_arithmetic mk_sub left_value right_value)))
+  | Mul (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (symbolic_arithmetic mk_mul left_value right_value)))
+  | Div (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (symbolic_arithmetic mk_div left_value right_value)))
+  | SpecialFunc (name, arguments) ->
+      let rec evaluate_arguments evaluated = function
+        | [] ->
+            continuation
+              (SExpr
+                 (mk_special name (List.rev_map symbolic_expr evaluated)))
+        | argument :: rest ->
+            symbolic_eval_cps environment argument (fun value ->
+              evaluate_arguments (value :: evaluated) rest)
+      in
+      evaluate_arguments [] arguments
+  | Cmp (operation, left, right, flipped) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (SExpr
+               (expr
+                  (node
+                     (Cmp
+                        ( operation
+                        , symbolic_expr left_value
+                        , symbolic_expr right_value
+                        , flipped )))))))
+  | FinCmp (operation, left, right, modulus, flipped) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (SExpr
+               (expr
+                  (node
+                     (FinCmp
+                        ( operation
+                        , symbolic_expr left_value
+                        , symbolic_expr right_value
+                        , modulus
+                        , flipped )))))))
+  | FinEq (left, right, modulus) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        symbolic_eval_cps environment right (fun right_value ->
+          continuation
+            (SExpr
+               (expr
+                  (node
+                     (FinEq
+                        ( symbolic_expr left_value
+                        , symbolic_expr right_value
+                        , modulus )))))))
+  | And (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        match symbolic_bool left_value with
+        | Some false -> continuation (SExpr (mk_bool false))
+        | Some true -> symbolic_eval_cps environment right continuation
+        | None ->
+            symbolic_eval_cps environment right (fun right_value ->
+              continuation
+                (SExpr
+                   (node
+                      (And
+                         (symbolic_expr left_value, symbolic_expr right_value))))))
+  | Or (left, right) ->
+      symbolic_eval_cps environment left (fun left_value ->
+        match symbolic_bool left_value with
+        | Some true -> continuation (SExpr (mk_bool true))
+        | Some false -> symbolic_eval_cps environment right continuation
+        | None ->
+            symbolic_eval_cps environment right (fun right_value ->
+              continuation
+                (SExpr
+                   (node
+                      (Or
+                         (symbolic_expr left_value, symbolic_expr right_value))))))
+  | Not value ->
+      symbolic_eval_cps environment value (fun symbolic ->
+        match symbolic_bool symbolic with
+        | Some value -> continuation (SExpr (mk_bool (not value)))
+        | None -> continuation (SExpr (node (Not (symbolic_expr symbolic)))))
+  | If (condition, if_true, if_false) ->
+      symbolic_eval_cps environment condition (fun condition_value ->
+        match symbolic_bool condition_value with
+        | Some true ->
+            symbolic_eval_cps environment if_true continuation
+        | Some false ->
+            symbolic_eval_cps environment if_false continuation
+        | None ->
+            raise
+              (Cannot_symbolically_evaluate
+                 "cannot choose a branch for a symbolic conditional"))
+  | Fun (argument, body) ->
+      continuation (SClosure (argument, body, environment))
+  | FuncApp (function_expression, argument) ->
+      symbolic_eval_cps environment function_expression (fun function_value ->
+        symbolic_eval_cps environment argument (fun argument_value ->
+          match function_value with
+          | SClosure (name, body, captured_environment) ->
+              symbolic_eval_cps
+                ((name, argument_value) :: captured_environment)
+                body continuation
+          | SRecClosure
+              (function_name, name, body, captured_environment) ->
+              symbolic_eval_cps
+                ((name, argument_value)
+                 :: (function_name, function_value)
+                 :: captured_environment)
+                body continuation
+          | SCont captured -> continuation (captured argument_value)
+          | _ ->
+              continuation
+                (SExpr
+                   (node
+                      (FuncApp
+                         ( symbolic_expr function_value
+                         , symbolic_expr argument_value ))))))
+  | Fix (function_name, argument, body) ->
+      continuation
+        (SRecClosure (function_name, argument, body, environment))
+  | FinConst (value, modulus) ->
+      continuation (SExpr (node (FinConst (value, modulus))))
+  | Observe observed ->
+      symbolic_eval_cps environment observed (fun value ->
+        match symbolic_bool value with
+        | Some true -> continuation SUnit
+        | Some false ->
+            raise (Cannot_symbolically_evaluate "observe failed")
+        | None ->
+            raise (Cannot_symbolically_evaluate "symbolic observe"))
+  | Nil -> continuation SNil
+  | Cons (head, tail) ->
+      symbolic_eval_cps environment head (fun head_value ->
+        symbolic_eval_cps environment tail (fun tail_value ->
+          continuation (SCons (head_value, tail_value))))
+  | MatchList (value, if_nil, head_name, tail_name, if_cons) ->
+      symbolic_eval_cps environment value (function
+        | SNil -> symbolic_eval_cps environment if_nil continuation
+        | SCons (head, tail) ->
+            symbolic_eval_cps
+              ((head_name, head) :: (tail_name, tail) :: environment)
+              if_cons continuation
+        | _ ->
+            raise
+              (Cannot_symbolically_evaluate "symbolic list match"))
+  | Unit -> continuation SUnit
+  | RuntimeError message -> raise (Cannot_symbolically_evaluate message)
+  | Reset body ->
+      let value = symbolic_eval_cps environment body (fun value -> value) in
+      continuation value
+  | Shift (continuation_name, body) ->
+      symbolic_eval_cps
+        ((continuation_name, SCont continuation) :: environment)
+        body (fun value -> value)
+  | Cdf (distribution, point) ->
+      symbolic_eval_cps environment point (fun point_value ->
+        continuation
+          (SExpr
+             (node
+                (Cdf
+                   ( symbolic_sample environment distribution
+                   , symbolic_expr point_value )))))
+  | CdfExpr (kernel, point) ->
+      symbolic_eval_cps environment kernel (fun kernel_value ->
+        symbolic_eval_cps environment point (fun point_value ->
+          continuation
+            (SExpr
+               (node
+                  (CdfExpr
+                     ( symbolic_expr kernel_value
+                     , symbolic_expr point_value ))))))
+  | Sample _ -> raise (Cannot_symbolically_evaluate "sample")
+  | DiscreteCase _ ->
+      raise (Cannot_symbolically_evaluate "discrete case")
+
+let evaluate_symbolically expression =
+  try Some (algebraic (symbolic_expr (symbolic_eval [] expression))) with
+  | Cannot_symbolically_evaluate _ -> None
+
+let evaluate_symbolically_or_original expression =
+  match evaluate_symbolically expression with
+  | Some evaluated -> evaluated
+  | None -> expression

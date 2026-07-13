@@ -122,10 +122,10 @@ let apply_values_simplified values e =
 
 let finalize_simplified_ad ad_mode values e =
   let simplified = apply_values_simplified values e in
-  match ad_mode with
-  | Forward -> simplified
-  | Reverse -> Slice.Reverse.interpret_closed_or_original simplified
-  | ReverseRuntime -> simplified
+    match ad_mode with
+    | Forward | Reverse ->
+        Slice.Simplify.evaluate_symbolically_or_original simplified
+    | ReverseRuntime -> simplified
 
 let free_float_var_names te =
   Slice.Util.free_float_vars te

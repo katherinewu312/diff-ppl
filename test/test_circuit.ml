@@ -21,6 +21,17 @@ let assert_close ?(eps = 1e-9) expected actual =
     (Printf.sprintf "expected %.12g, received %.12g" expected actual)
     (abs_float (expected -. actual) <= eps)
 
+let contains_substring text substring =
+  let text_length = String.length text in
+  let substring_length = String.length substring in
+  let rec search index =
+    substring_length = 0
+    || (index + substring_length <= text_length
+        && (String.sub text index substring_length = substring
+            || search (index + 1)))
+  in
+  search 0
+
 let eval compiled assignments =
   Slice.Circuit.eval compiled assignments
 
@@ -152,6 +163,51 @@ let test_weighted_branch_compiles_and_differentiates _ =
   assert_close 3.75 reverse_primal;
   assert_close (-1.0) reverse_tangent
 
+let test_compiled_forward_dual_symbolically_evaluates _ =
+  let compiled =
+    compile_source
+      "let b1 = discrete(p, 1 - p) in \
+       let s1 = if b1 <#2 1#2 then x1 else x1 * x1 in \
+       let b2 = discrete(p, 1 - p) in \
+       let s2 = if b2 <#2 1#2 then s1 + x2 else s1 * x2 in \
+       s2"
+  in
+  let typed = infer_with_cuts (Slice.Circuit.to_expr compiled) in
+  let raw =
+    Slice.Forward.dual_expectation_raw
+      ~seeds:(Slice.Forward.seeds_of_param "p") typed
+  in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw compiled dual should retain circuit sharing"
+    (contains_substring raw_plain "_circuit_");
+  let evaluated =
+    raw
+    |> Slice.Simplify.algebraic
+    |> Slice.Simplify.evaluate_symbolically_or_original
+  in
+  let evaluated_plain = Slice.Pretty.string_of_expr_plain evaluated in
+  List.iter
+    (fun syntax ->
+       assert_bool
+         ("evaluated compiled dual still contains " ^ syntax)
+         (not (contains_substring evaluated_plain syntax)))
+    [ "_circuit_"; "_forward_"; "let "; "fst "; "snd " ];
+  let environment =
+    [ "p", Slice.Ast.VFloat 0.3
+    ; "x1", Slice.Ast.VFloat 2.0
+    ; "x2", Slice.Ast.VFloat 3.0
+    ]
+  in
+  match Slice.Interp.eval environment evaluated with
+  | Slice.Ast.VPair
+      (Slice.Ast.VFloat primal, Slice.Ast.VFloat tangent) ->
+      assert_close 9.06 primal;
+      assert_close (-8.6) tangent
+  | value ->
+      assert_failure
+        ("expected a symbolically evaluated dual, received "
+         ^ Slice.Ast.string_of_value value)
+
 let test_shared_choice_preserves_correlation _ =
   let compiled =
     compile_source
@@ -279,6 +335,8 @@ let suite =
   ; "decision hash-consing" >:: test_decision_hash_consing
   ; "smart constructors preserve NaN" >:: test_arithmetic_smart_constructors_preserve_nan
   ; "weighted branch and AD" >:: test_weighted_branch_compiles_and_differentiates
+  ; "compiled forward symbolic evaluation"
+      >:: test_compiled_forward_dual_symbolically_evaluates
   ; "shared choice correlation" >:: test_shared_choice_preserves_correlation
   ; "distinct choices independent" >:: test_distinct_choices_are_independent
   ; "multivalued choice" >:: test_multivalued_choice
