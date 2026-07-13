@@ -9,11 +9,11 @@ The script generates 5 scalar output programs:
   probabilistic_branch:   E[if discrete(p, 1-p) then sum(xs) else sumsq(xs)]
   discrete_chain:         nested discrete choices:
                             let b1 = discrete(p, 1 - p) in
-                            let s1 = if b1 < 1 then x1 else x1 * x1 in
+                            let s1 = if b1 <#2 1#2 then x1 else x1 * x1 in
                             let b2 = discrete(p, 1 - p) in
-                            let s2 = if b2 < 1 then s1 + x2 else s1 * x2 in
+                            let s2 = if b2 <#2 1#2 then s1 + x2 else s1 * x2 in
                             ...
-                            let sn = if bn < 1 then s(n-1) + xn else s(n-1) * xn in
+                            let sn = if bn <#2 1#2 then s(n-1) + xn else s(n-1) * xn in
                             sn
 
 For each program and size n, it times expectation evaluation plus the requested

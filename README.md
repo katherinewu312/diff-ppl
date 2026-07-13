@@ -110,6 +110,8 @@ before the simplified AD output.
 
 **** It is best to give a concrete PARAM=VALUE at runtime. Even though symbolic expressions like theta -> d/dtheta E[X(theta)] _can_ be produced, such expressions may not always be correct (i.e. the ordering of the cuts of an expression may get messed up, causing problems in the discretization and hence the AD transformation). ****
 
+*** Currently, every differentiable input variable is assumed to be a scalar float.
+
 AD modes also accept `--at PARAM=VALUE` or `--at=PARAM=VALUE`. This uses
 `VALUE` when ordering symbolic discretization cuts, substitutes `VALUE` into
 the raw AD program, and then simplifies the simplified AD program again at that

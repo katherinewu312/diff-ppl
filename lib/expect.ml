@@ -1,4 +1,5 @@
-(* Evaluates / computes the expectation of a program. Specify --expect in diff_ppl. *)
+(* Evaluates (for a deterministic program) or computes the expectation (for a probabilistic program) of a program.
+ Specify --expect in diff_ppl. *)
 
 open Ast
 
