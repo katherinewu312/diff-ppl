@@ -10,11 +10,22 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--expect] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all] [--compile] [--expect] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
   Printf.printf "== %s ==\n%s\n\n" title body
+
+let string_of_circuit_stats (stats : Slice.Circuit.stats) =
+  Printf.sprintf
+    "allocated random variables: %d\nreachable random variables: %d\nadditive terms: %d\nallocated decision nodes: %d\nreachable decision nodes: %d\nallocated arithmetic nodes: %d\nreachable arithmetic nodes: %d"
+    stats.random_variables
+    stats.reachable_random_variables
+    stats.additive_terms
+    stats.decision_nodes
+    stats.eliminated_decision_nodes
+    stats.arithmetic_nodes
+    stats.reachable_arithmetic_nodes
 
 type mode =
   | Discretize
@@ -120,6 +131,37 @@ let free_float_var_names te =
   Slice.Util.free_float_vars te
   |> Slice.Util.StringSet.elements
 
+let preserve_missing_parameters parameters expression =
+  let present = Slice.Simplify.free_vars expression in
+  let used_names =
+    List.fold_left
+      (fun names parameter -> Slice.Simplify.StringSet.add parameter names)
+      present parameters
+    |> ref
+  in
+  let rec fresh_binding () =
+    let candidate = Slice.Util.fresh_var "_circuit_input" in
+    if Slice.Simplify.StringSet.mem candidate !used_names then
+      fresh_binding ()
+    else begin
+      used_names := Slice.Simplify.StringSet.add candidate !used_names;
+      candidate
+    end
+  in
+  List.fold_right
+    (fun parameter body ->
+       if Slice.Simplify.StringSet.mem parameter present then
+         body
+       else
+         let binding = fresh_binding () in
+         Slice.Ast.ExprNode
+           (Slice.Ast.Let
+              ( binding
+              , Slice.Ast.ExprNode (Slice.Ast.Var parameter)
+              , body )))
+    parameters
+    expression
+
 let format_ad_expr vector_output e =
   match vector_output, e with
   | NoVector, _ -> Slice.Pretty.string_of_expr e
@@ -131,7 +173,7 @@ let infer_with_cuts expr =
   |> Slice.Inference.infer
   |> Slice.Cut_inference.analyze
 
-let run ~print_all ~mode ~ad_mode ~assignments filename =
+let run ~print_all ~compile ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
@@ -146,11 +188,30 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     if ad_args.explicit_seeds then seeds else None
   in
   let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
+  let compiled_circuit, original_circuit_parameters =
+    if compile then
+      let discretized_texpr = infer_with_cuts transformed in
+      ( Some (Slice.Circuit.compile discretized_texpr)
+      , free_float_var_names discretized_texpr )
+    else
+      None, []
+  in
+  let backend_expr =
+    match compiled_circuit with
+    | Some circuit -> Slice.Circuit.to_expr circuit
+    | None -> transformed
+  in
+  let ad_backend_expr =
+    match compiled_circuit, ad_args.explicit_seeds with
+    | Some _, false ->
+        preserve_missing_parameters original_circuit_parameters backend_expr
+    | Some _, true | None, _ -> backend_expr
+  in
   let ad_output =
     match mode with
     | Discretize -> None
     | Evaluate ->
-        let discretized_texpr = infer_with_cuts transformed in
+        let discretized_texpr = infer_with_cuts backend_expr in
         let values =
           List.map
             (fun { name; value; _ } -> (name, value))
@@ -162,7 +223,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           ; vector_output = NoVector
           }
     | AdGradient ->
-        let discretized_texpr = infer_with_cuts transformed in
+        let discretized_texpr = infer_with_cuts ad_backend_expr in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
           | Forward, false | Reverse, false | ReverseRuntime, false ->
@@ -200,7 +261,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
           ; vector_output
           }
     | AdDual ->
-        let discretized_texpr = infer_with_cuts transformed in
+        let discretized_texpr = infer_with_cuts ad_backend_expr in
         let vector_output =
           match ad_mode, ad_args.explicit_seeds with
           | Forward, false | Reverse, false ->
@@ -229,7 +290,7 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
   in
   let output_source =
     match ad_output with
-    | None -> Slice.Pretty.string_of_expr transformed
+    | None -> Slice.Pretty.string_of_expr backend_expr
     | Some e -> format_ad_expr e.vector_output e.simplified
   in
   if print_all then (
@@ -237,6 +298,13 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     print_section "Normalized program" (Slice.Pretty.string_of_expr normalized);
     print_section "Typed AST" (Slice.Pretty.string_of_texpr texpr);
     print_section "Discretized program" (Slice.Pretty.string_of_expr transformed);
+    (match compiled_circuit with
+     | None -> ()
+     | Some circuit ->
+         print_section "Compiled arithmetic circuit"
+           (Slice.Pretty.string_of_expr (Slice.Circuit.to_expr circuit));
+         print_section "Compiled circuit stats"
+           (string_of_circuit_stats circuit.stats));
     (match ad_output with
      | None -> ()
      | Some { raw; simplified; vector_output } ->
@@ -259,43 +327,45 @@ let run ~print_all ~mode ~ad_mode ~assignments filename =
     print_endline output_source
 
 let () =
-  let rec parse_args print_all mode ad_mode assignments filename = function
+  let rec parse_args print_all compile mode ad_mode assignments filename = function
     | [] ->
         (match filename with
          | Some f ->
-             (try run ~print_all ~mode ~ad_mode ~assignments:(List.rev assignments) f with
+             (try run ~print_all ~compile ~mode ~ad_mode ~assignments:(List.rev assignments) f with
               | Failure msg ->
                   prerr_endline msg;
                   exit 1)
          | None -> usage ())
     | "--print-all" :: rest ->
-        parse_args true mode ad_mode assignments filename rest
+        parse_args true compile mode ad_mode assignments filename rest
+    | "--compile" :: rest ->
+        parse_args print_all true mode ad_mode assignments filename rest
     | "--expect" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all Evaluate ad_mode assignments filename rest
+        parse_args print_all compile Evaluate ad_mode assignments filename rest
     | "--forward" :: rest ->
-        parse_args print_all mode Forward assignments filename rest
+        parse_args print_all compile mode Forward assignments filename rest
     | "--reverse" :: rest ->
-        parse_args print_all mode Reverse assignments filename rest
+        parse_args print_all compile mode Reverse assignments filename rest
     | "--reverse-runtime" :: rest ->
-        parse_args print_all mode ReverseRuntime assignments filename rest
+        parse_args print_all compile mode ReverseRuntime assignments filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdGradient ad_mode assignments filename rest
+        parse_args print_all compile AdGradient ad_mode assignments filename rest
     | "--ad-dual" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all AdDual ad_mode assignments filename rest
+        parse_args print_all compile AdDual ad_mode assignments filename rest
     | "--at" :: spec :: rest ->
-        parse_args print_all mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
         let spec = String.sub arg 5 (String.length arg - 5) in
-        parse_args print_all mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.contains arg '=' ->
-        parse_args print_all mode ad_mode (parse_assignment arg :: assignments) filename rest
+        parse_args print_all compile mode ad_mode (parse_assignment arg :: assignments) filename rest
     | arg :: rest ->
         if filename <> None then usage ();
-        parse_args print_all mode ad_mode assignments (Some arg) rest
+        parse_args print_all compile mode ad_mode assignments (Some arg) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: args -> parse_args false Discretize Forward [] None args
+  | _ :: args -> parse_args false false Discretize Forward [] None args
   | [] -> usage ()

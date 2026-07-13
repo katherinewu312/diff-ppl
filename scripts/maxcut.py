@@ -15,6 +15,9 @@ and one contribution per complete-graph edge:
 The objective is the weighted cut value, so differentiating the expected
 objective with respect to p1, p2, ... measures the AD cost of a program with
 2^n discrete assignments.
+
+Pass --compile to add the circuit compilation backend flag to every diff_ppl
+command in the benchmark run.
 """
 
 from __future__ import annotations
@@ -194,9 +197,11 @@ def run_repeated(
     repeats: int,
     warmups: int,
     timeout_s: float,
+    compile_circuit: bool = False,
 ) -> tuple[float, str]:
     output = ""
-    cmd = [str(exe), *args, *values, str(program)]
+    compile_args = ["--compile"] if compile_circuit else []
+    cmd = [str(exe), *compile_args, *args, *values, str(program)]
     for _ in range(warmups):
         output = run_command(cmd, timeout_s).output
 
@@ -215,6 +220,7 @@ def run_workload(
     repeats: int,
     warmups: int,
     timeout_s: float,
+    compile_circuit: bool = False,
 ) -> Result:
     function_s, _ = run_repeated(
         exe,
@@ -224,6 +230,7 @@ def run_workload(
         repeats,
         warmups,
         timeout_s,
+        compile_circuit,
     )
     forward_s, forward_out = run_repeated(
         exe,
@@ -233,6 +240,7 @@ def run_workload(
         repeats,
         warmups,
         timeout_s,
+        compile_circuit,
     )
     reverse_s, reverse_out = run_repeated(
         exe,
@@ -242,6 +250,7 @@ def run_workload(
         repeats,
         warmups,
         timeout_s,
+        compile_circuit,
     )
     return Result(
         workload=workload,
@@ -359,6 +368,7 @@ def execute_workloads(
     warmups: int,
     timeout_s: float,
     jobs: int,
+    compile_circuit: bool = False,
 ) -> list[Result]:
     def run(workload: Workload) -> Result:
         return run_workload(
@@ -368,6 +378,7 @@ def execute_workloads(
             repeats,
             warmups,
             timeout_s,
+            compile_circuit,
         )
 
     if jobs == 1:
@@ -408,6 +419,11 @@ def main() -> int:
         type=float,
         default=0.35,
         help="probability assigned to every p_i (default: 0.35)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="prepend --compile to every diff_ppl command",
     )
     parser.add_argument(
         "--reverse-runtime",
@@ -493,6 +509,7 @@ def main() -> int:
             args.warmups,
             args.timeout,
             args.jobs,
+            args.compile,
         )
 
         for result in results:

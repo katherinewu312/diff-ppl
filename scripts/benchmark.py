@@ -37,8 +37,11 @@ its requested function/AD timings sequentially.
 It writes table-shaped CSV results to results/results_symbolic.csv by default,
 or results/results_concrete.csv when --reverse-runtime is used.
 
+Pass --compile to add the circuit compilation backend flag to every diff_ppl
+command in the benchmark run.
+
 Usage:
-$ python3 benchmark.py [-h] [--ns NS] [--families FAMILIES] [--ad-output {ad,ad-dual}] [--modes MODES] [--reverse-runtime] [--repeats REPEATS] [--warmups WARMUPS] [--timeout TIMEOUT] [--jobs JOBS] [--keep-programs KEEP_PROGRAMS]
+$ python3 benchmark.py [-h] [--ns NS] [--families FAMILIES] [--ad-output {ad,ad-dual}] [--modes MODES] [--compile] [--reverse-runtime] [--repeats REPEATS] [--warmups WARMUPS] [--timeout TIMEOUT] [--jobs JOBS] [--keep-programs KEEP_PROGRAMS]
                     [--csv CSV] [--show-samples]
 """
 
@@ -315,9 +318,11 @@ def run_repeated(
     repeats: int,
     warmups: int,
     timeout_s: float,
+    compile_circuit: bool = False,
 ) -> tuple[float, str]:
     output = ""
-    cmd_args = [*args, *values, str(program)]
+    compile_args = ["--compile"] if compile_circuit else []
+    cmd_args = [*compile_args, *args, *values, str(program)]
     for _ in range(warmups):
         output = run_diff_ppl(exe, cmd_args, timeout_s).output
 
@@ -344,6 +349,7 @@ def run_benchmark_workload(
     repeats: int,
     warmups: int,
     timeout_s: float,
+    compile_circuit: bool = False,
 ) -> BenchmarkResult:
     function_s, _ = run_repeated(
         exe,
@@ -353,6 +359,7 @@ def run_benchmark_workload(
         repeats,
         warmups,
         timeout_s,
+        compile_circuit,
     )
     forward_s = None
     forward_out = None
@@ -365,6 +372,7 @@ def run_benchmark_workload(
             repeats,
             warmups,
             timeout_s,
+            compile_circuit,
         )
 
     reverse_s = None
@@ -381,6 +389,7 @@ def run_benchmark_workload(
             repeats,
             warmups,
             timeout_s,
+            compile_circuit,
         )
     return BenchmarkResult(
         workload=workload,
@@ -548,6 +557,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="prepend --compile to every diff_ppl command",
+    )
+    parser.add_argument(
         "--reverse-runtime",
         action="store_true",
         help="time the concrete --reverse-runtime --ad path instead of symbolic --reverse --ad",
@@ -651,6 +665,7 @@ def main() -> int:
                 args.repeats,
                 args.warmups,
                 args.timeout,
+                args.compile,
             )
 
         if args.jobs == 1:

@@ -4,7 +4,7 @@
  (name slice)
  (public_name diff_ppl.slice)
  (libraries gsl)
- (modules lat lats ast distributions lexer parser parse pretty interp util inference cut_inference cut_order normalize discretization simplify cdf_derivative expect forward reverse))
+ (modules lat lats ast distributions lexer parser parse pretty interp util inference cut_inference cut_order normalize discretization simplify cdf_derivative expect forward reverse circuit_ir circuit_dd circuit_lower circuit_eliminate circuit_runtime circuit))
 
 (ocamllex lexer)
 

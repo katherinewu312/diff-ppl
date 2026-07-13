@@ -1,4 +1,4 @@
 (tests
- (names test_slice)
+ (names test_slice test_circuit)
  (libraries diff_ppl.slice ounit2)
  (action (ignore-stderr (run %{test}))))
