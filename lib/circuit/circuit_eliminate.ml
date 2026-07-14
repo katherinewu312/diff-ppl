@@ -1,9 +1,8 @@
-(** Eliminate all finite random variables from a lowered decision diagram.
+(** Eliminate any finite random variables that remain in the lowered result.
 
-    Elimination is memoized by DD node ID.  The top-level result is stored as
-    a list of additive components, so each component is eliminated separately
-    and the resulting arithmetic nodes are summed.  This is the concrete use
-    of linearity of expectation in the initial backend. *)
+    Float lowering normally emits its expected-value summary as an arithmetic
+    leaf.  Boolean results, and exact DDs demanded while constructing a float
+    summary, use this same memoized elimination machinery. *)
 
 type result =
   { root : Circuit_ir.ac_id
@@ -13,7 +12,9 @@ type result =
 let fail message = failwith ("Circuit elimination: " ^ message)
 
 let eliminate (program : Circuit_lower.program) =
-  let memo = Hashtbl.create 251 in
+  (* Lowering may already have eliminated a DD to obtain a demanded exact
+     expectation.  Reuse that work when finishing the program. *)
+  let memo = program.elimination_memo in
   let rec visit dd =
     match Hashtbl.find_opt memo dd with
     | Some result -> result
@@ -49,4 +50,3 @@ let eliminate (program : Circuit_lower.program) =
   { root = Circuit_ir.sum_list program.arithmetic roots
   ; eliminated_dd_nodes = Hashtbl.length memo
   }
-

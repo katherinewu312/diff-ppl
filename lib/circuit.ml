@@ -41,7 +41,7 @@ let compile typed_expression =
   let stats =
     { random_variables = Hashtbl.length lowered.choices
     ; reachable_random_variables
-    ; additive_terms = List.length lowered.result_parts
+    ; additive_terms = lowered.additive_terms
     ; decision_nodes = Circuit_dd.node_count lowered.decisions
     ; eliminated_decision_nodes = eliminated.eliminated_dd_nodes
     ; arithmetic_nodes = Circuit_ir.node_count lowered.arithmetic

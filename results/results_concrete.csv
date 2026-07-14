@@ -1,6 +1,36 @@
 family,n,expr chars,function ms,forward ms,reverse ms,fwd/function,rev/function,match
-discrete_chain,1,86,     8.13,--,     8.52,--,   1.05x,skipped
-discrete_chain,2,173,     7.61,--,     8.52,--,   1.12x,skipped
-discrete_chain,4,347,     8.92,--,     8.07,--,   0.90x,skipped
-discrete_chain,8,695,    18.40,--,    16.22,--,   0.88x,skipped
-discrete_chain,16,1425, 16064.14,--,  3414.88,--,   0.21x,skipped
+dense_linear_sum,2,11,     9.56,     8.87,    10.08,   0.93x,   1.05x,yes
+dense_linear_sum,4,25,     8.82,     8.79,     9.73,   1.00x,   1.10x,yes
+dense_linear_sum,8,53,     8.60,     8.85,    11.34,   1.03x,   1.32x,yes
+dense_linear_sum,16,109,     9.39,    14.09,    12.45,   1.50x,   1.33x,yes
+dense_linear_sum,32,221,    11.60,    45.44,    11.49,   3.92x,   0.99x,yes
+dense_linear_sum,64,445,    12.47,   475.86,    15.00,  38.15x,   1.20x,yes
+dense_linear_sum,128,893,    17.68,  4150.96,    25.21, 234.80x,   1.43x,yes
+dense_quadratic_sum,2,25,    11.16,    10.27,    10.08,   0.92x,   0.90x,yes
+dense_quadratic_sum,4,53,    11.73,    10.82,    10.69,   0.92x,   0.91x,yes
+dense_quadratic_sum,8,109,     9.58,    11.05,    16.93,   1.15x,   1.77x,yes
+dense_quadratic_sum,16,221,    10.01,    25.26,    14.44,   2.52x,   1.44x,yes
+dense_quadratic_sum,32,445,    11.78,   154.93,    15.95,  13.15x,   1.35x,yes
+dense_quadratic_sum,64,893,    12.90,  1399.17,    18.94, 108.50x,   1.47x,yes
+dense_quadratic_sum,128,1789,    30.15, 14594.77,    33.05, 484.06x,   1.10x,yes
+dense_coupled_square,2,28,    11.83,    12.30,    13.13,   1.04x,   1.11x,yes
+dense_coupled_square,4,42,    11.90,    12.81,    14.19,   1.08x,   1.19x,yes
+dense_coupled_square,8,70,    12.50,    16.89,    14.60,   1.35x,   1.17x,yes
+dense_coupled_square,16,126,    15.01,    16.69,    13.66,   1.11x,   0.91x,yes
+dense_coupled_square,32,238,    14.24,    49.46,    17.75,   3.47x,   1.25x,yes
+dense_coupled_square,64,462,    16.14,   485.97,    16.62,  30.11x,   1.03x,yes
+dense_coupled_square,128,910,    21.53,  4582.44,    22.50, 212.88x,   1.05x,yes
+probabilistic_branch,2,90,    13.17,    11.86,    11.84,   0.90x,   0.90x,yes
+probabilistic_branch,4,132,    11.90,    12.66,    11.49,   1.06x,   0.97x,yes
+probabilistic_branch,8,216,    12.36,    15.22,    11.51,   1.23x,   0.93x,yes
+probabilistic_branch,16,384,    12.84,    37.60,    16.84,   2.93x,   1.31x,yes
+probabilistic_branch,32,720,    16.67,   302.66,    17.53,  18.15x,   1.05x,yes
+probabilistic_branch,64,1392,    18.05,  2582.59,    21.11, 143.04x,   1.17x,yes
+probabilistic_branch,128,2736,    37.48, 19767.15,    37.48, 527.39x,   1.00x,yes
+discrete_chain,2,173,    14.89,    15.41,    17.64,   1.03x,   1.18x,yes
+discrete_chain,4,347,    15.01,    14.97,    14.36,   1.00x,   0.96x,yes
+discrete_chain,8,695,    16.83,    21.81,    17.27,   1.30x,   1.03x,yes
+discrete_chain,16,1425,    15.59,    92.25,    17.01,   5.92x,   1.09x,yes
+discrete_chain,32,2897,    16.75,   777.30,    14.19,  46.42x,   0.85x,yes
+discrete_chain,64,5841,    19.11,  7068.28,    24.27, 369.91x,   1.27x,yes
+discrete_chain,128,11873,    41.50, 53584.27,    29.44,1291.03x,   0.71x,yes
