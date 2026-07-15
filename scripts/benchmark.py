@@ -36,6 +36,8 @@ its requested function/AD timings sequentially.
 
 It writes table-shaped CSV results to results/results_symbolic.csv by default,
 or results/results_concrete.csv when --reverse-runtime is used.
+The table's enumerated-branches column contains the naive path count normally,
+or the factorized after-compilation count when --compile is used.
 
 Pass --compile to add the circuit compilation backend flag to every diff_ppl
 command in the benchmark run.
@@ -69,7 +71,7 @@ RESULTS_DIR = REPO_ROOT / "results"
 TABLE_HEADERS = [
     "family",
     "n",
-    "expr chars",
+    "enumerated branches",
     "function ms",
     "forward ms",
     "reverse ms",
@@ -100,12 +102,12 @@ class BenchmarkWorkload:
     n: int
     values: list[str]
     program: Path
-    expr_chars: int
 
 
 @dataclass
 class BenchmarkResult:
     workload: BenchmarkWorkload
+    enumerated_branches: int
     function_s: float
     forward_s: Optional[float]
     reverse_s: Optional[float]
@@ -310,6 +312,27 @@ def run_diff_ppl(
     return run_command([str(exe), *args], timeout_s)
 
 
+def count_enumerated_branches(
+    exe: Path,
+    values: list[str],
+    program: Path,
+    timeout_s: float,
+    compile_circuit: bool,
+) -> int:
+    compile_args = ["--compile"] if compile_circuit else []
+    result = run_diff_ppl(
+        exe,
+        [*compile_args, "--enumerated-paths", *values, str(program)],
+        timeout_s,
+    )
+    try:
+        return int(result.output)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"could not parse enumerated branch count from: {result.output!r}"
+        ) from exc
+
+
 def run_repeated(
     exe: Path,
     args: list[str],
@@ -351,6 +374,13 @@ def run_benchmark_workload(
     timeout_s: float,
     compile_circuit: bool = False,
 ) -> BenchmarkResult:
+    enumerated_branches = count_enumerated_branches(
+        exe,
+        workload.values,
+        workload.program,
+        timeout_s,
+        compile_circuit,
+    )
     function_s, _ = run_repeated(
         exe,
         ["--expect"],
@@ -393,6 +423,7 @@ def run_benchmark_workload(
         )
     return BenchmarkResult(
         workload=workload,
+        enumerated_branches=enumerated_branches,
         function_s=function_s,
         forward_s=forward_s,
         reverse_s=reverse_s,
@@ -438,7 +469,7 @@ def print_table(rows: list[dict[str, object]]) -> None:
     print("| " + " | ".join("---" for _ in TABLE_HEADERS) + " |")
     for row in rows:
         print(
-            "| {family} | {n} | {expr_chars} | {function_ms} | {forward_ms} | "
+            "| {family} | {n} | {enumerated_branches} | {function_ms} | {forward_ms} | "
             "{reverse_ms} | {forward_over_function} | {reverse_over_function} | "
             "{match} |".format(**row)
         )
@@ -459,7 +490,7 @@ def write_table_csv(path: Path, rows: list[dict[str, object]]) -> None:
                 {
                     "family": row["family"],
                     "n": row["n"],
-                    "expr chars": row["expr_chars"],
+                    "enumerated branches": row["enumerated_branches"],
                     "function ms": row["function_ms"],
                     "forward ms": row["forward_ms"],
                     "reverse ms": row["reverse_ms"],
@@ -641,7 +672,6 @@ def main() -> int:
                     else family_assignments(family, vars_)
                 )
                 program = write_program(program_dir, family, n, vars_)
-                expr_chars = len(program.read_text(encoding="utf-8").strip())
                 workloads.append(
                     BenchmarkWorkload(
                         index=len(workloads),
@@ -649,7 +679,6 @@ def main() -> int:
                         n=n,
                         values=values,
                         program=program,
-                        expr_chars=expr_chars,
                     )
                 )
         return workloads
@@ -710,7 +739,7 @@ def main() -> int:
                 {
                     "family": workload.family_name,
                     "n": workload.n,
-                    "expr_chars": workload.expr_chars,
+                    "enumerated_branches": result.enumerated_branches,
                     "function_ms": format_ms(result.function_s),
                     "forward_ms": format_optional_ms(result.forward_s),
                     "reverse_ms": format_optional_ms(result.reverse_s),
