@@ -1,15 +1,33 @@
 open Ast
 
-type at =
-  { param : string
-  ; value : float
-  }
-
 type idx_value =
   | IVConst of float
   | IVSym of string * expr
 
 module StringMap = Map.Make(String)
+
+(* Concrete values available while ordering symbolic cuts.  Keeping all
+   assignments here lets callers pass values uniformly: an assignment is used
+   for ordering only when a cut expression actually depends on it. *)
+type at = float StringMap.t
+
+let singleton param value =
+  StringMap.singleton param value
+
+let of_list assignments =
+  List.fold_left
+    (fun env (param, value) -> StringMap.add param value env)
+    StringMap.empty
+    assignments
+
+let describes_at at =
+  StringMap.bindings at
+  |> List.map (fun (param, value) -> param ^ "=" ^ string_of_float value)
+  |> String.concat ", "
+
+let expression_uses_at at expression =
+  Simplify.free_vars expression
+  |> Simplify.StringSet.exists (fun name -> StringMap.mem name at)
 
 let find_index pred lst =
   let rec loop i = function
@@ -94,23 +112,23 @@ let cut_value_expr = function
   | CVSym (_, e) -> e
 
 let eval_cut_value_at (at : at) (cv : cut_val) : float =
-  let env = StringMap.singleton at.param at.value in
-  match eval_float_env env (cut_value_expr cv) with
+  match eval_float_env at (cut_value_expr cv) with
   | Some f -> f
   | None ->
       failwith
         ("Cannot order symbolic cut "
          ^ Pretty.string_of_expr_plain (cut_value_expr cv)
          ^ " at "
-         ^ at.param
-         ^ "="
-         ^ string_of_float at.value)
+         ^ describes_at at)
+
+let cut_uses_at at = function
+  | Less cv | LessEq cv -> expression_uses_at at (cut_value_expr cv)
 
 let ordered_cuts ?at (cut_set : CutSet.t) : cut list =
   let cuts = CutSet.elements cut_set in
   match at with
   | None -> cuts
-  | Some at ->
+  | Some at when List.exists (cut_uses_at at) cuts ->
       let cut_value = function
         | Less cv | LessEq cv -> eval_cut_value_at at cv
       in
@@ -119,24 +137,27 @@ let ordered_cuts ?at (cut_set : CutSet.t) : cut list =
            let by_value = compare (cut_value c1) (cut_value c2) in
            if by_value <> 0 then by_value else compare_cut c1 c2)
         cuts
+  | Some _ -> cuts
+
+let idx_value_uses_at at = function
+  | IVConst _ -> false
+  | IVSym (_, e) -> expression_uses_at at e
 
 let eval_idx_value_at (at : at) = function
   | IVConst f -> f
   | IVSym (_, e) ->
-      (match eval_float_env (StringMap.singleton at.param at.value) e with
+      (match eval_float_env at e with
        | Some f -> f
        | None ->
            failwith
              ("Cannot order symbolic value "
               ^ Pretty.string_of_expr_plain e
               ^ " at "
-              ^ at.param
-              ^ "="
-              ^ string_of_float at.value))
+              ^ describes_at at))
 
 let satisfies_cut ?at (iv : idx_value) (cut : cut) : bool =
   match at with
-  | Some at ->
+  | Some at when idx_value_uses_at at iv || cut_uses_at at cut ->
       let f = eval_idx_value_at at iv in
       let cut_value = function
         | Less cv | LessEq cv -> eval_cut_value_at at cv
@@ -144,7 +165,7 @@ let satisfies_cut ?at (iv : idx_value) (cut : cut) : bool =
       (match cut with
        | Less _ -> f < cut_value cut
        | LessEq _ -> f <= cut_value cut)
-  | None ->
+  | None | Some _ ->
       (match iv, cut with
        | IVConst f, Less (CVConst c) -> f < c
        | IVConst f, LessEq (CVConst c) -> f <= c
