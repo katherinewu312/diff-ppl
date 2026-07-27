@@ -10,7 +10,7 @@ let read_file filename =
     raise exn
 
 let usage () =
-  prerr_endline "usage: diff_ppl [--print-all] [--compile] [--expect] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
+  prerr_endline "usage: diff_ppl [--print-all | --enumerated-paths] [--compile] [--expect] [--forward | --reverse | --reverse-runtime] [--ad | --ad-dual] [--at PARAM=VALUE] [PARAM=VALUE ...] [dPARAM=SEED ...] FILE.slice";
   exit 2
 
 let print_section title body =
@@ -18,10 +18,11 @@ let print_section title body =
 
 let string_of_circuit_stats (stats : Slice.Circuit.stats) =
   Printf.sprintf
-    "allocated random variables: %d\nreachable random variables: %d\nadditive terms: %d\nallocated decision nodes: %d\nreachable decision nodes: %d\nallocated arithmetic nodes: %d\nreachable arithmetic nodes: %d"
+    "allocated random variables: %d\nreachable random variables: %d\nadditive terms: %d\nsummed terms: %d\nallocated decision nodes: %d\nreachable decision nodes: %d\nallocated arithmetic nodes: %d\nreachable arithmetic nodes: %d"
     stats.random_variables
     stats.reachable_random_variables
     stats.additive_terms
+    stats.summed_terms
     stats.decision_nodes
     stats.eliminated_decision_nodes
     stats.arithmetic_nodes
@@ -106,7 +107,10 @@ let parse_ad_args assignments =
   in
   let cut_order_at =
     match values with
-    | { name; value; _ } :: _ -> Some { Slice.Cut_order.param = name; value }
+    | _ :: _ ->
+        Some
+          (Slice.Cut_order.of_list
+             (List.map (fun { name; value; _ } -> name, value) values))
     | [] -> None
   in
   { values; seeds; explicit_seeds; cut_order_at }
@@ -173,7 +177,7 @@ let infer_with_cuts expr =
   |> Slice.Inference.infer
   |> Slice.Cut_inference.analyze
 
-let run ~print_all ~compile ~mode ~ad_mode ~assignments filename =
+let run ~print_all ~enumerated_paths ~compile ~mode ~ad_mode ~assignments filename =
   let ad_args = parse_ad_args assignments in
   let source = read_file filename in
   let expr = Slice.Parse.parse_expr source in
@@ -188,9 +192,14 @@ let run ~print_all ~compile ~mode ~ad_mode ~assignments filename =
     if ad_args.explicit_seeds then seeds else None
   in
   let transformed = Slice.Discretization.discretize_top ?cut_order_at texpr in
+  let discretized_texpr = infer_with_cuts transformed in
+  let paths_before_compilation =
+    if print_all || (enumerated_paths && not compile) then
+      Some (Slice.Expect.path_count discretized_texpr)
+    else None
+  in
   let compiled_circuit, original_circuit_parameters =
     if compile then
-      let discretized_texpr = infer_with_cuts transformed in
       ( Some (Slice.Circuit.compile discretized_texpr)
       , free_float_var_names discretized_texpr )
     else
@@ -293,11 +302,24 @@ let run ~print_all ~compile ~mode ~ad_mode ~assignments filename =
     | None -> Slice.Pretty.string_of_expr backend_expr
     | Some e -> format_ad_expr e.vector_output e.simplified
   in
-  if print_all then (
+  if enumerated_paths then
+    (match compiled_circuit, paths_before_compilation with
+     | Some circuit, _ -> print_endline (string_of_int circuit.stats.summed_terms)
+     | None, Some paths -> print_endline (string_of_int paths)
+     | None, None -> assert false)
+  else if print_all then (
     print_section "Source program" source;
     print_section "Normalized program" (Slice.Pretty.string_of_expr normalized);
     print_section "Typed AST" (Slice.Pretty.string_of_texpr texpr);
     print_section "Discretized program" (Slice.Pretty.string_of_expr transformed);
+    (match paths_before_compilation, compiled_circuit with
+     | Some paths, None ->
+         print_section "Enumerated paths" (string_of_int paths)
+     | Some before, Some circuit ->
+         print_section "Enumerated paths"
+           (Printf.sprintf "before compilation: %d\nafter compilation: %d"
+              before circuit.stats.summed_terms)
+     | None, _ -> ());
     (match compiled_circuit with
      | None -> ()
      | Some circuit ->
@@ -327,45 +349,47 @@ let run ~print_all ~compile ~mode ~ad_mode ~assignments filename =
     print_endline output_source
 
 let () =
-  let rec parse_args print_all compile mode ad_mode assignments filename = function
+  let rec parse_args print_all enumerated_paths compile mode ad_mode assignments filename = function
     | [] ->
         (match filename with
          | Some f ->
-             (try run ~print_all ~compile ~mode ~ad_mode ~assignments:(List.rev assignments) f with
+             (try run ~print_all ~enumerated_paths ~compile ~mode ~ad_mode ~assignments:(List.rev assignments) f with
               | Failure msg ->
                   prerr_endline msg;
                   exit 1)
          | None -> usage ())
     | "--print-all" :: rest ->
-        parse_args true compile mode ad_mode assignments filename rest
+        parse_args true enumerated_paths compile mode ad_mode assignments filename rest
+    | "--enumerated-paths" :: rest ->
+        parse_args print_all true compile mode ad_mode assignments filename rest
     | "--compile" :: rest ->
-        parse_args print_all true mode ad_mode assignments filename rest
+        parse_args print_all enumerated_paths true mode ad_mode assignments filename rest
     | "--expect" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all compile Evaluate ad_mode assignments filename rest
+        parse_args print_all enumerated_paths compile Evaluate ad_mode assignments filename rest
     | "--forward" :: rest ->
-        parse_args print_all compile mode Forward assignments filename rest
+        parse_args print_all enumerated_paths compile mode Forward assignments filename rest
     | "--reverse" :: rest ->
-        parse_args print_all compile mode Reverse assignments filename rest
+        parse_args print_all enumerated_paths compile mode Reverse assignments filename rest
     | "--reverse-runtime" :: rest ->
-        parse_args print_all compile mode ReverseRuntime assignments filename rest
+        parse_args print_all enumerated_paths compile mode ReverseRuntime assignments filename rest
     | "--ad" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all compile AdGradient ad_mode assignments filename rest
+        parse_args print_all enumerated_paths compile AdGradient ad_mode assignments filename rest
     | "--ad-dual" :: rest ->
         if mode <> Discretize then usage ();
-        parse_args print_all compile AdDual ad_mode assignments filename rest
+        parse_args print_all enumerated_paths compile AdDual ad_mode assignments filename rest
     | "--at" :: spec :: rest ->
-        parse_args print_all compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all enumerated_paths compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.length arg > 5 && String.sub arg 0 5 = "--at=" ->
         let spec = String.sub arg 5 (String.length arg - 5) in
-        parse_args print_all compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
+        parse_args print_all enumerated_paths compile mode ad_mode (parse_assignment ~is_at:true spec :: assignments) filename rest
     | arg :: rest when String.contains arg '=' ->
-        parse_args print_all compile mode ad_mode (parse_assignment arg :: assignments) filename rest
+        parse_args print_all enumerated_paths compile mode ad_mode (parse_assignment arg :: assignments) filename rest
     | arg :: rest ->
         if filename <> None then usage ();
-        parse_args print_all compile mode ad_mode assignments (Some arg) rest
+        parse_args print_all enumerated_paths compile mode ad_mode assignments (Some arg) rest
   in
   match Array.to_list Sys.argv with
-  | _ :: args -> parse_args false false Discretize Forward [] None args
+  | _ :: args -> parse_args false false false Discretize Forward [] None args
   | [] -> usage ()

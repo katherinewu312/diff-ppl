@@ -4,6 +4,7 @@ type stats =
   { random_variables : int
   ; reachable_random_variables : int
   ; additive_terms : int
+  ; summed_terms : int
   ; decision_nodes : int
   ; eliminated_decision_nodes : int
   ; arithmetic_nodes : int
@@ -42,6 +43,7 @@ let compile typed_expression =
     { random_variables = Hashtbl.length lowered.choices
     ; reachable_random_variables
     ; additive_terms = lowered.additive_terms
+    ; summed_terms = lowered.summed_terms
     ; decision_nodes = Circuit_dd.node_count lowered.decisions
     ; eliminated_decision_nodes = eliminated.eliminated_dd_nodes
     ; arithmetic_nodes = Circuit_ir.node_count lowered.arithmetic

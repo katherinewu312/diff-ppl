@@ -42,6 +42,26 @@ let rec sum_exprs = function
   | [x] -> x
   | x :: xs -> add x (sum_exprs xs)
 
+(* When requested by [raw_with_path_count], record the leaves of the tree of
+   generated discrete sums.  A branch contributes one leaf unless expanding
+   it generated a nested discrete sum, whose leaves are counted instead. *)
+let active_path_counter : (int ref * int ref) option ref = ref None
+
+let discrete_sums_generated () =
+  match !active_path_counter with
+  | Some (_, sums) -> !sums
+  | None -> 0
+
+let record_path_leaf_if_no_nested_sum sums_before =
+  match !active_path_counter with
+  | Some (paths, sums) when !sums = sums_before -> incr paths
+  | Some _ | None -> ()
+
+let record_discrete_sum () =
+  match !active_path_counter with
+  | Some (_, sums) -> incr sums
+  | None -> ()
+
 let top_value ty v =
   match Ast.force ty with
   | TFloat _ -> v
@@ -155,10 +175,15 @@ and prob_trans env ((_, _, TAExprNode ae) as te) k =
     match ae with
     | DiscreteCase cases ->
         let rec bind_cases acc = function
-          | [] -> sum_exprs (List.rev acc)
+          | [] ->
+              record_discrete_sum ();
+              sum_exprs (List.rev acc)
           | (branch, prob) :: rest ->
               bind_eval "_eval_p" (det env prob) (fun p ->
-                bind_eval "_eval_b" (prob_trans env branch k) (fun b ->
+                let sums_before = discrete_sums_generated () in
+                let branch = prob_trans env branch k in
+                record_path_leaf_if_no_nested_sum sums_before;
+                bind_eval "_eval_b" branch (fun b ->
                   bind_cases (mul p b :: acc) rest))
         in
         bind_cases [] cases
@@ -255,11 +280,41 @@ and prob_trans env ((_, _, TAExprNode ae) as te) k =
 let expectation_raw ((ty, _, _) as te) =
   prob_trans StringSet.empty te (top_value ty)
 
+let expectation_raw_with_path_count te =
+  let paths = ref 0 in
+  let sums = ref 0 in
+  let previous_counter = !active_path_counter in
+  active_path_counter := Some (paths, sums);
+  match expectation_raw te with
+  | result ->
+      active_path_counter := previous_counter;
+      result, max 1 !paths
+  | exception exn ->
+      active_path_counter := previous_counter;
+      raise exn
+
 let deterministic_raw te =
   Discretization.texpr_to_expr te
 
 let raw ((_, eff, _) as te) =
   if is_prob_effect eff then expectation_raw te else deterministic_raw te
+
+(** Return the raw expectation program together with the number of terminal
+    weighted paths materialized by the expectation transformation.  A pure
+    program has one path. *)
+let raw_with_path_count ((_, eff, _) as te) =
+  if is_prob_effect eff then expectation_raw_with_path_count te
+  else deterministic_raw te, 1
+
+let path_count te =
+  let previous_fresh_var = !Util.var_counter in
+  match raw_with_path_count te with
+  | _, paths ->
+      Util.var_counter := previous_fresh_var;
+      paths
+  | exception exn ->
+      Util.var_counter := previous_fresh_var;
+      raise exn
 
 let apply_values values e =
   List.fold_left

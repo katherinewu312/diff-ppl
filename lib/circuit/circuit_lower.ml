@@ -33,6 +33,7 @@ type value =
   { kind : value_kind
   ; parts : Circuit_dd.dd_id list Lazy.t
   ; mean : Circuit_ir.ac_id Lazy.t option
+  ; summed_terms : int Lazy.t
   ; support : RvSet.t
   ; additive_terms : int
   }
@@ -61,6 +62,7 @@ type program =
   ; result_kind : value_kind
   ; result_parts : Circuit_dd.dd_id list
   ; additive_terms : int
+  ; summed_terms : int
   ; elimination_memo : (Circuit_dd.dd_id, Circuit_ir.ac_id) Hashtbl.t
   }
 
@@ -189,6 +191,7 @@ let normalize_float_parts builder parts =
   | nonzero -> nonzero
 
 let make_value builder ?(support = RvSet.empty) ?mean
+    ?(summed_terms = lazy 1)
     ?(additive_terms = 1) kind parts =
   match kind with
   | Float ->
@@ -197,6 +200,7 @@ let make_value builder ?(support = RvSet.empty) ?mean
            { kind
            ; parts = lazy (normalize_float_parts builder (Lazy.force parts))
            ; mean = Some mean
+           ; summed_terms
            ; support
            ; additive_terms
            }
@@ -211,6 +215,7 @@ let make_value builder ?(support = RvSet.empty) ?mean
                  fail
                    (kind_name kind ^ " value did not have exactly one DD root"))
       ; mean = None
+      ; summed_terms = lazy 1
       ; support
       ; additive_terms = 1
       }
@@ -224,6 +229,9 @@ let mean value context =
   match value.mean with
   | Some mean -> Lazy.force mean
   | None -> fail (context ^ " requires a float expected-value summary")
+
+let summed_terms (value : value) =
+  Lazy.force value.summed_terms
 
 let is_deterministic value = RvSet.is_empty value.support
 
@@ -281,6 +289,16 @@ let eliminate_parts builder parts =
   List.map (eliminate_dd builder) parts
   |> Circuit_ir.sum_list builder.arithmetic
 
+let dd_summed_terms builder root =
+  match Circuit_dd.lookup builder.decisions root with
+  | Circuit_dd.Leaf _ -> 1
+  | Circuit_dd.Choice (_, children) -> Array.length children
+
+let parts_summed_terms builder parts =
+  List.fold_left
+    (fun total part -> total + dd_summed_terms builder part)
+    0 parts
+
 let multiply_values builder left right =
   require_kind Float left "multiplication";
   require_kind Float right "multiplication";
@@ -298,17 +316,24 @@ let multiply_values builder left right =
        |> List.rev)
   in
   let support = RvSet.union left.support right.support in
+  let factorized =
+    is_deterministic left || is_deterministic right || independent left right
+  in
   let mean =
     lazy
-      (if is_deterministic left || is_deterministic right
-          || independent left right
+      (if factorized
        then
          Circuit_ir.mul builder.arithmetic
            (mean left "multiplication") (mean right "multiplication")
        else
          eliminate_parts builder (Lazy.force parts))
   in
-  make_value builder Float ~support ~mean
+  let result_summed_terms =
+    lazy
+      (if factorized then 1
+       else parts_summed_terms builder (Lazy.force parts))
+  in
+  make_value builder Float ~support ~mean ~summed_terms:result_summed_terms
     ~additive_terms:(left.additive_terms * right.additive_terms)
     parts
 
@@ -365,6 +390,10 @@ let rec lower_expr builder env ((ty, _effect, TAExprNode expression) : texpr) =
           (lazy
              (Circuit_ir.add builder.arithmetic
                 (mean left "addition") (mean right "addition")))
+        ~summed_terms:
+          (lazy
+             (if is_deterministic left && is_deterministic right then 1
+              else summed_terms left + summed_terms right))
         ~additive_terms:(left.additive_terms + right.additive_terms)
         (lazy (Lazy.force right.parts @ Lazy.force left.parts))
   | Sub (left, right) ->
@@ -394,6 +423,7 @@ let rec lower_expr builder env ((ty, _effect, TAExprNode expression) : texpr) =
           (lazy
              (Circuit_ir.sub builder.arithmetic
                 (mean left "subtraction") (mean right "subtraction")))
+        ~summed_terms:(lazy 1)
         ~additive_terms:
           (if deterministic then 1
            else left.additive_terms + right.additive_terms)
@@ -422,6 +452,10 @@ let rec lower_expr builder env ((ty, _effect, TAExprNode expression) : texpr) =
                   (mean left "division") (mean right "division")
               else
                 eliminate_parts builder (Lazy.force parts)))
+        ~summed_terms:
+          (lazy
+             (if is_deterministic right then 1
+              else parts_summed_terms builder (Lazy.force parts)))
         parts
   | FinCmp (operation, left, right, modulus, _flipped) ->
       let operation =
@@ -536,7 +570,16 @@ let rec lower_expr builder env ((ty, _effect, TAExprNode expression) : texpr) =
                      else
                        eliminate_parts builder (Lazy.force parts))
                 in
-                make_value builder Float ~support ~mean:result_mean parts
+                let result_summed_terms =
+                  lazy
+                    (let true_mean = mean if_true "conditional" in
+                     let false_mean = mean if_false "conditional" in
+                     if true_mean = false_mean then summed_terms if_true
+                     else if condition_is_independent then 2
+                     else parts_summed_terms builder (Lazy.force parts))
+                in
+                make_value builder Float ~support ~mean:result_mean
+                  ~summed_terms:result_summed_terms parts
             | Bool | Fin _ ->
                 make_value builder if_true.kind ~support parts))
   | DiscreteCase cases -> lower_discrete builder env cases
@@ -611,7 +654,8 @@ and lower_discrete builder env cases =
                   branches
                 |> Circuit_ir.sum builder.arithmetic)
            in
-           make_value builder Float ~support ~mean:result_mean parts
+           make_value builder Float ~support ~mean:result_mean
+             ~summed_terms:(lazy arity) parts
        | Bool | Fin _ -> make_value builder first.kind ~support parts)
 
 let lower expression =
@@ -629,11 +673,19 @@ let lower expression =
     | Bool -> List.rev (Lazy.force result.parts)
     | Fin _ -> assert false
   in
+  let result_summed_terms =
+    match result.kind with
+    | Float -> summed_terms result
+    | Bool ->
+        parts_summed_terms builder result_parts
+    | Fin _ -> assert false
+  in
   { arithmetic = builder.arithmetic
   ; decisions = builder.decisions
   ; choices = builder.choices
   ; result_kind = result.kind
   ; result_parts
   ; additive_terms = result.additive_terms
+  ; summed_terms = result_summed_terms
   ; elimination_memo = builder.elimination_memo
   }

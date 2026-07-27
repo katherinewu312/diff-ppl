@@ -89,6 +89,43 @@ let rec sequence = function
 let apply_cont k yhat =
   node (FuncApp (node (Var k), yhat))
 
+type cdf_input =
+  { cdf_yhat : expr
+  ; cdf_marker : string
+  }
+
+let cdf_dual_input active inputs yhat =
+  if active then
+    let marker = Util.fresh_var "_rev_cdf_d" in
+    ( { cdf_yhat = yhat; cdf_marker = marker } :: inputs
+    , pair (primal yhat) (node (Var marker)) )
+  else
+    (inputs, pair (primal yhat) zero)
+
+let cdf_partial inputs marker tangent =
+  List.fold_left
+    (fun result input ->
+       Simplify.subst_float input.cdf_marker
+         (if input.cdf_marker = marker then 1.0 else 0.0)
+         result)
+    tangent
+    inputs
+
+let cdf_reverse dual inputs =
+  let cont = Util.fresh_var "_rev_k" in
+  shift cont
+    (bind_rev "_rev_yhat" (reverse_float (primal dual)) (fun yhat ->
+       let updates =
+         List.map
+           (fun input ->
+              add_adjoint input.cdf_yhat
+                (mul
+                   (adjoint_value yhat)
+                   (cdf_partial inputs input.cdf_marker (second dual))))
+           inputs
+       in
+       sequence (apply_cont cont yhat :: updates)))
+
 type binary_rule =
   { primal_op : expr -> expr -> expr
   ; backprop_left : expr -> expr -> expr -> expr
@@ -260,14 +297,63 @@ and trans env (ty, _, TAExprNode ae) =
   | RuntimeError msg ->
       if Util.is_float_ty ty then reverse_float (node (RuntimeError msg))
       else node (RuntimeError msg)
-  | Cdf _ | CdfExpr _ ->
-      unsupported "reverse differentiation of CDF expressions is not implemented yet"
+  | Cdf (dist, point) ->
+      trans_cdf env dist point
+  | CdfExpr (kernel, point) ->
+      trans_cdf_expr env kernel point
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | DiscreteCase _ ->
       unsupported "discrete reverse AD is not implemented yet"
   | Reset _ | Shift _ ->
       unsupported "shift/reset are internal reverse-AD constructs"
+
+and trans_cdf_arg env inputs te k =
+  bind_rev "_rev_cdf_arg" (trans env te) (fun yhat ->
+    let free = Util.free_float_vars te in
+    let active = not (StringSet.is_empty (StringSet.inter env free)) in
+    let inputs, dual = cdf_dual_input active inputs yhat in
+    k inputs dual)
+
+and trans_cdf_dist env inputs dist k =
+  match dist with
+  | Distr1 (kind, e1) ->
+      trans_cdf_arg env inputs e1 (fun inputs d1 ->
+        k inputs (Distr1 (kind, d1)))
+  | Distr2 (kind, e1, e2) ->
+      trans_cdf_arg env inputs e1 (fun inputs d1 ->
+        trans_cdf_arg env inputs e2 (fun inputs d2 ->
+          k inputs (Distr2 (kind, d1, d2))))
+
+and trans_cdf env dist point =
+  trans_cdf_dist env [] dist (fun inputs dist_dual ->
+    trans_cdf_arg env inputs point (fun inputs point_dual ->
+      cdf_reverse (Cdf_derivative.cdf dist_dual point_dual) inputs))
+
+and trans_cdf_kernel env inputs ((_, _, TAExprNode ae) as te) k =
+  match ae with
+  | Sample dist ->
+      trans_cdf_dist env inputs dist (fun inputs dist_dual ->
+        k inputs (node (Sample dist_dual)))
+  | Add (e1, e2) when Forward.texpr_contains_sample te ->
+      trans_cdf_kernel_binary env inputs e1 e2 (fun a b -> node (Add (a, b))) k
+  | Sub (e1, e2) when Forward.texpr_contains_sample te ->
+      trans_cdf_kernel_binary env inputs e1 e2 (fun a b -> node (Sub (a, b))) k
+  | Mul (e1, e2) when Forward.texpr_contains_sample te ->
+      trans_cdf_kernel_binary env inputs e1 e2 (fun a b -> node (Mul (a, b))) k
+  | Div (e1, e2) when Forward.texpr_contains_sample te ->
+      trans_cdf_kernel_binary env inputs e1 e2 (fun a b -> node (Div (a, b))) k
+  | _ -> trans_cdf_arg env inputs te k
+
+and trans_cdf_kernel_binary env inputs e1 e2 op k =
+  trans_cdf_kernel env inputs e1 (fun inputs d1 ->
+    trans_cdf_kernel env inputs e2 (fun inputs d2 ->
+      k inputs (op d1 d2)))
+
+and trans_cdf_expr env kernel point =
+  trans_cdf_kernel env [] kernel (fun inputs kernel_dual ->
+    trans_cdf_arg env inputs point (fun inputs point_dual ->
+      cdf_reverse (Cdf_derivative.cdf_expr kernel_dual point_dual) inputs))
 
 and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
   if not (is_prob_effect (effect_of te)) then
@@ -396,8 +482,10 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
       prob_trans env e1 (fun v1 ->
         prob_trans env e2 (fun v2 -> kappa (assign v1 v2)))
 
-  | Cdf _ | CdfExpr _ ->
-      unsupported "reverse differentiation of CDF expressions is not implemented yet"
+  | Cdf (dist, point) ->
+      bind_rev "_rev_yhat" (trans_cdf env dist point) kappa
+  | CdfExpr (kernel, point) ->
+      bind_rev "_rev_yhat" (trans_cdf_expr env kernel point) kappa
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
