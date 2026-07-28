@@ -1,0 +1,1 @@
+if uniform(0,1) < theta then 0 else 1

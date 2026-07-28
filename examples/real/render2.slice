@@ -1,0 +1,8 @@
+let x = uniform(0.0, 1.0) in
+let y = uniform(0.0, 1.0) in
+let q = 1.4142135623730951 * (x + y + c) + 2.0 in
+
+if x + y < 0.0 - c then
+  0.0
+else
+  1.0 / q

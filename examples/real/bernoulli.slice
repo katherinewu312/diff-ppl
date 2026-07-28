@@ -1,3 +1,6 @@
+(* From Tucker 2017: https://arxiv.org/pdf/1703.07370, https://arxiv.org/pdf/1807.11143
+z ~ Bernoulli(sigmoid(phi)) *)
+
 let z = if logistic(1) < phi then 1.0 else 0.0 in
 let d = z - p0 in
 d * d

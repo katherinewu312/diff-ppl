@@ -151,6 +151,7 @@ let test_weighted_branch_compiles_and_differentiates _ =
   in
   assert_bool "compiled expression still contains a random choice"
     (not (contains_discrete (Slice.Circuit.to_expr compiled)));
+  assert_equal 2 compiled.stats.summed_terms;
   assert_close 3.75 (eval compiled [ "p", 0.25; "x", 2.0 ]);
   let primal, tangent =
     eval_forward_dual compiled "p" [ "p", 0.25; "x", 2.0 ]
@@ -162,6 +163,14 @@ let test_weighted_branch_compiles_and_differentiates _ =
   in
   assert_close 3.75 reverse_primal;
   assert_close (-1.0) reverse_tangent
+
+let test_summed_terms_ignore_deterministic_addition _ =
+  let compiled =
+    compile_source
+      "if discrete(p, 1 - p) <#2 1#2 then x + y * z \
+       else z * y + x"
+  in
+  assert_equal 1 compiled.stats.summed_terms
 
 let test_compiled_forward_dual_symbolically_evaluates _ =
   let compiled =
@@ -217,6 +226,8 @@ let test_shared_choice_preserves_correlation _ =
   in
   assert_close 7.75
     (eval compiled [ "p", 0.25; "x", 2.0; "y", 3.0 ]);
+  assert_bool "a correlated square should demand and eliminate its exact DD"
+    (compiled.stats.eliminated_decision_nodes > 1);
   (* p, x, y, 1, (1-p), x^2, y^2, the two weighted terms, and their sum. *)
   assert_equal 10 compiled.stats.reachable_arithmetic_nodes;
   let _, tangent =
@@ -224,6 +235,46 @@ let test_shared_choice_preserves_correlation _ =
       [ "p", 0.25; "x", 2.0; "y", 3.0 ]
   in
   assert_close (-5.0) tangent
+
+let discrete_chain_source n =
+  let buffer = Buffer.create (n * 120) in
+  for index = 1 to n do
+    let variable = Printf.sprintf "x%02d" index in
+    Printf.bprintf buffer "let b%d = discrete(p, 1 - p) in\n" index;
+    if index = 1 then
+      Printf.bprintf buffer
+        "let s1 = if b1 <#2 1#2 then %s else %s * %s in\n"
+        variable variable variable
+    else
+      Printf.bprintf buffer
+        "let s%d = if b%d <#2 1#2 then s%d + %s else s%d * %s in\n"
+        index index (index - 1) variable (index - 1) variable
+  done;
+  Printf.bprintf buffer "s%d" n;
+  Buffer.contents buffer
+
+let test_affine_chain_keeps_exact_dd_lazy _ =
+  let n = 16 in
+  let probability = 0.3 in
+  let x = 1.1 in
+  let compiled = compile_source (discrete_chain_source n) in
+  let expected = ref (probability *. x +. (1.0 -. probability) *. x *. x) in
+  for _index = 2 to n do
+    expected :=
+      probability *. (!expected +. x)
+      +. (1.0 -. probability) *. (!expected *. x)
+  done;
+  let assignments =
+    ("p", probability)
+    :: List.init n (fun index -> Printf.sprintf "x%02d" (index + 1), x)
+  in
+  assert_close !expected (eval compiled assignments);
+  assert_equal n compiled.stats.random_variables;
+  assert_equal 0 compiled.stats.reachable_random_variables;
+  assert_bool "affine chain unexpectedly constructed a joint DD"
+    (compiled.stats.decision_nodes < 100);
+  assert_bool "affine chain arithmetic circuit should grow linearly"
+    (compiled.stats.reachable_arithmetic_nodes < 120)
 
 let test_distinct_choices_are_independent _ =
   let compiled =
@@ -335,9 +386,13 @@ let suite =
   ; "decision hash-consing" >:: test_decision_hash_consing
   ; "smart constructors preserve NaN" >:: test_arithmetic_smart_constructors_preserve_nan
   ; "weighted branch and AD" >:: test_weighted_branch_compiles_and_differentiates
+  ; "summed terms ignore deterministic addition"
+      >:: test_summed_terms_ignore_deterministic_addition
   ; "compiled forward symbolic evaluation"
       >:: test_compiled_forward_dual_symbolically_evaluates
   ; "shared choice correlation" >:: test_shared_choice_preserves_correlation
+  ; "affine chain keeps exact DD lazy"
+      >:: test_affine_chain_keeps_exact_dd_lazy
   ; "distinct choices independent" >:: test_distinct_choices_are_independent
   ; "multivalued choice" >:: test_multivalued_choice
   ; "boolean objective" >:: test_boolean_objective_is_indicator

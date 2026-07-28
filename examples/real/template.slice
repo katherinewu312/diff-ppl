@@ -1,0 +1,5 @@
+x ~ continuous_distribution(θ)
+if h(x, θ) < 0:
+    return f₁(x, θ)
+else:
+    return f₂(x, θ)

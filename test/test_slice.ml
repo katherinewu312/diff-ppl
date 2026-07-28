@@ -18,13 +18,53 @@ let transform_normalized source =
   let texpr = infer_with_cuts expr in
   Slice.Discretization.discretize_top texpr
 
-let transform_at param value source =
+let enumerated_paths source =
+  let transformed = transform_normalized source in
+  let texpr = infer_with_cuts transformed in
+  Slice.Expect.path_count texpr
+
+let test_counts_enumerated_paths _ =
+  assert_equal 1 (enumerated_paths "x + 1");
+  assert_equal 2
+    (enumerated_paths
+       "if discrete(p, 1 - p) <#2 1#2 then x else y");
+  assert_equal 6
+    (enumerated_paths
+       "let x = discrete(p, 1 - p) in \
+        let y = discrete(q, r, 1 - q - r) in \
+        if x <#2 1#2 then y ==#3 0#3 else y ==#3 1#3")
+
+let transform_with_cut_values values source =
   let expr = Slice.Parse.parse_expr source in
   let texpr = infer_with_cuts expr in
-  let cut_order_at : Slice.Cut_order.at =
-    { Slice.Cut_order.param = param; value }
-  in
+  let cut_order_at = Slice.Cut_order.of_list values in
   Slice.Discretization.discretize_top ~cut_order_at texpr
+
+let transform_at param value source =
+  transform_with_cut_values [param, value] source
+
+let test_irrelevant_assignment_does_not_order_symbolic_cut _ =
+  let source = "logistic(1) < phi" in
+  let transformed = transform_at "p0" 0.45 source in
+  let expected = transform source in
+  assert_equal
+    ~printer:Slice.Pretty.string_of_expr_plain
+    expected
+    transformed
+
+let test_relevant_assignment_orders_cut_among_other_assignments _ =
+  let source =
+    "let x = uniform(0, 1) in \
+     if x < theta then if x < theta * theta then p0 else 2 else 3"
+  in
+  let transformed =
+    transform_with_cut_values ["p0", 0.45; "theta", 0.5] source
+  in
+  let expected = transform_at "theta" 0.5 source in
+  assert_equal
+    ~printer:Slice.Pretty.string_of_expr_plain
+    expected
+    transformed
 
 let forward_gradient source =
   let expr = Slice.Parse.parse_expr source in
@@ -434,6 +474,42 @@ let test_forward_gaussian_cdf_dual_simplifies _ =
     ~cmp:(fun a b -> abs_float (a -. b) < 1e-9)
     0.3989422804014327
     tangent
+
+let test_reverse_uniform_cdf_dual_simplifies _ =
+  let dual = reverse_dual_after_discretize "uniform(0, 1) < theta" in
+  let primal, gradient =
+    eval_dual_vector_with_env ["theta", Slice.Ast.VFloat 0.3] dual
+  in
+  assert_close 0.3 primal;
+  assert_float_list_close [1.0] gradient
+
+let test_reverse_gaussian_cdf_dual_simplifies _ =
+  let raw = reverse_dual_raw_after_discretize "gaussian(0, 1) < theta" in
+  assert_bool "raw reverse gaussian CDF AD should expose an erf closed form"
+    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "erf(");
+  let dual = reverse_dual_after_discretize "gaussian(0, 1) < theta" in
+  let primal, gradient =
+    eval_dual_vector_with_env ["theta", Slice.Ast.VFloat 0.0] dual
+  in
+  assert_close 0.5 primal;
+  assert_float_list_close [0.3989422804014327] gradient
+
+let test_reverse_uniform_sum_cdf_expr_simplifies _ =
+  let transformed =
+    transform_normalized "uniform(0, 1) + uniform(0, 1) < theta"
+  in
+  let texpr = infer_with_cuts transformed in
+  let dual =
+    Slice.Reverse.dual_expectation_raw ~param:"theta" texpr
+    |> Slice.Simplify.subst_float "theta" 0.5
+    |> Slice.Simplify.algebraic
+    |> Slice.Simplify.evaluate_symbolically_or_original
+  in
+  let primal, tangent =
+    eval_dual_with_env ["theta", Slice.Ast.VFloat 0.5] dual
+  in
+  assert_close 0.125 primal;
+  assert_close 0.5 tangent
 
 let test_normalize_sums_independent_gaussians _ =
   match normalize "gaussian(1, 2) + gaussian(3, 4)" with
@@ -1026,6 +1102,11 @@ let suite =
   "Slice transformation tests" >:::
   [ "test_symbolic_evaluator_reduces_nontrivial_lets"
       >:: test_symbolic_evaluator_reduces_nontrivial_lets
+  ; "test_irrelevant_assignment_does_not_order_symbolic_cut"
+      >:: test_irrelevant_assignment_does_not_order_symbolic_cut
+  ; "test_relevant_assignment_orders_cut_among_other_assignments"
+      >:: test_relevant_assignment_orders_cut_among_other_assignments
+  ; "test_counts_enumerated_paths" >:: test_counts_enumerated_paths
   ; "test_forward_and_reverse_share_symbolic_finalization"
       >:: test_forward_and_reverse_share_symbolic_finalization
   ; "test_typing" >:: test_typing
@@ -1036,6 +1117,9 @@ let suite =
   ; "test_forward_uniform_cdf_dual_simplifies" >:: test_forward_uniform_cdf_dual_simplifies
   ; "test_forward_uniform_cdf_gradient_simplifies" >:: test_forward_uniform_cdf_gradient_simplifies
   ; "test_forward_gaussian_cdf_dual_simplifies" >:: test_forward_gaussian_cdf_dual_simplifies
+  ; "test_reverse_uniform_cdf_dual_simplifies" >:: test_reverse_uniform_cdf_dual_simplifies
+  ; "test_reverse_gaussian_cdf_dual_simplifies" >:: test_reverse_gaussian_cdf_dual_simplifies
+  ; "test_reverse_uniform_sum_cdf_expr_simplifies" >:: test_reverse_uniform_sum_cdf_expr_simplifies
   ; "test_normalize_sums_independent_gaussians" >:: test_normalize_sums_independent_gaussians
   ; "test_normalize_sums_independent_gammas_with_common_scale" >:: test_normalize_sums_independent_gammas_with_common_scale
   ; "test_normalize_keeps_gammas_with_different_scales" >:: test_normalize_keeps_gammas_with_different_scales
