@@ -221,6 +221,89 @@ let infer_expr (e : expr) : texpr =
         (join [dist_eff; eff_of point_te])
         (Cdf (dist_exp', point_te))
 
+    | CdfJvp (dist_exp, tangent_dist_exp, point_e, point_tangent_e) ->
+      let infer_float e arg_name =
+        let t, eff, a = aux env e in
+        let arg_cut = Ast.fresh_cut_bag () in
+        let arg_float = Lats.fresh_float_bag () in
+        let arg_sym = Ast.fresh_sym_bag () in
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+         with Failure msg ->
+           failwith ("Type error in CDF JVP " ^ arg_name ^ ": " ^ msg));
+        (t, eff, a)
+      in
+      let infer_sample label = function
+        | Distr1 (kind, e1) ->
+            Distr1 (kind, infer_float e1 (label ^ " argument"))
+        | Distr2 (kind, e1, e2) ->
+            Distr2
+              ( kind
+              , infer_float e1 (label ^ " first argument")
+              , infer_float e2 (label ^ " second argument") )
+      in
+      let dist_exp' = infer_sample "distribution" dist_exp in
+      let tangent_dist_exp' = infer_sample "distribution tangent" tangent_dist_exp in
+      let point_te = infer_float point_e "point argument" in
+      let point_tangent_te = infer_float point_tangent_e "point tangent" in
+      let sample_eff = function
+        | Distr1 (_, te1) -> eff_of te1
+        | Distr2 (_, te1, te2) -> join [eff_of te1; eff_of te2]
+      in
+      let cuts_bag = Ast.fresh_cut_bag () in
+      let floats_bag = Lats.fresh_float_bag () in
+      let sym_bag = singleton_sym_bag orig_expr in
+      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+        (join
+           [ sample_eff dist_exp'
+           ; sample_eff tangent_dist_exp'
+           ; eff_of point_te
+           ; eff_of point_tangent_te
+           ])
+        (CdfJvp (dist_exp', tangent_dist_exp', point_te, point_tangent_te))
+
+    | CdfVjp
+        (dist_exp, parameter_active, point_e, point_active, output_adjoint_e) ->
+      let infer_float e arg_name =
+        let t, eff, a = aux env e in
+        let arg_cut = Ast.fresh_cut_bag () in
+        let arg_float = Lats.fresh_float_bag () in
+        let arg_sym = Ast.fresh_sym_bag () in
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+         with Failure msg ->
+           failwith ("Type error in CDF VJP " ^ arg_name ^ ": " ^ msg));
+        (t, eff, a)
+      in
+      let result_float () =
+        TFloat
+          (Ast.fresh_cut_bag (), Lats.fresh_float_bag (), Ast.fresh_sym_bag ())
+      in
+      let dist_exp', dist_eff, result_ty =
+        match dist_exp with
+        | Distr1 (kind, e1) ->
+            let te1 = infer_float e1 "distribution argument" in
+            ( Distr1 (kind, te1)
+            , eff_of te1
+            , TPair (result_float (), result_float ()) )
+        | Distr2 (kind, e1, e2) ->
+            let te1 = infer_float e1 "first distribution argument" in
+            let te2 = infer_float e2 "second distribution argument" in
+            ( Distr2 (kind, te1, te2)
+            , join [eff_of te1; eff_of te2]
+            , TPair
+                ( result_float ()
+                , TPair (result_float (), result_float ()) ) )
+      in
+      let point_te = infer_float point_e "point argument" in
+      let output_adjoint_te = infer_float output_adjoint_e "output adjoint" in
+      mk result_ty
+        (join [dist_eff; eff_of point_te; eff_of output_adjoint_te])
+        (CdfVjp
+           ( dist_exp'
+           , parameter_active
+           , point_te
+           , point_active
+           , output_adjoint_te ))
+
     | CdfExpr (kernel_e, point_e) ->
       let infer_float e arg_name =
         let t, eff, a = aux env e in

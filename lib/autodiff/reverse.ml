@@ -126,6 +126,25 @@ let cdf_reverse dual inputs =
        in
        sequence (apply_cont cont yhat :: updates)))
 
+let cdf_callback_reverse dist parameter_active point point_active build_updates =
+  let cont = Util.fresh_var "_rev_k" in
+  shift cont
+    (bind_rev "_rev_yhat"
+       (reverse_float (node (Cdf (dist, point))))
+       (fun yhat ->
+          sequence
+            [ apply_cont cont yhat
+            ; bind_rev "_rev_cdf_vjp"
+                (node
+                   (CdfVjp
+                      ( dist
+                      , parameter_active
+                      , point
+                      , point_active
+                      , adjoint_value yhat )))
+                (fun pullbacks -> sequence (build_updates pullbacks))
+            ]))
+
 type binary_rule =
   { primal_op : expr -> expr -> expr
   ; backprop_left : expr -> expr -> expr -> expr
@@ -301,6 +320,8 @@ and trans env (ty, _, TAExprNode ae) =
       trans_cdf env dist point
   | CdfExpr (kernel, point) ->
       trans_cdf_expr env kernel point
+  | CdfJvp _ | CdfVjp _ ->
+      unsupported "higher-order differentiation of CDF callback primitives is not implemented"
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | DiscreteCase _ ->
@@ -315,6 +336,10 @@ and trans_cdf_arg env inputs te k =
     let inputs, dual = cdf_dual_input active inputs yhat in
     k inputs dual)
 
+and cdf_arg_active env te =
+  let free = Util.free_float_vars te in
+  not (StringSet.is_empty (StringSet.inter env free))
+
 and trans_cdf_dist env inputs dist k =
   match dist with
   | Distr1 (kind, e1) ->
@@ -326,9 +351,61 @@ and trans_cdf_dist env inputs dist k =
           k inputs (Distr2 (kind, d1, d2))))
 
 and trans_cdf env dist point =
-  trans_cdf_dist env [] dist (fun inputs dist_dual ->
-    trans_cdf_arg env inputs point (fun inputs point_dual ->
-      cdf_reverse (Cdf_derivative.cdf dist_dual point_dual) inputs))
+  match dist with
+  | Distr1 (kind, arg) ->
+      bind_rev "_rev_cdf_arg" (trans env arg) (fun arg_yhat ->
+        bind_rev "_rev_cdf_arg" (trans env point) (fun point_yhat ->
+          let arg_active = cdf_arg_active env arg in
+          let point_active = cdf_arg_active env point in
+          cdf_callback_reverse
+            (Distr1 (kind, primal arg_yhat))
+            [arg_active]
+            (primal point_yhat)
+            point_active
+            (fun pullbacks ->
+               let updates = [] in
+               let updates =
+                 if arg_active then
+                   add_adjoint arg_yhat (first pullbacks) :: updates
+                 else updates
+               in
+               let updates =
+                 if point_active then
+                   add_adjoint point_yhat (second pullbacks) :: updates
+                 else updates
+               in
+               List.rev updates)))
+  | Distr2 (kind, arg1, arg2) ->
+      bind_rev "_rev_cdf_arg" (trans env arg1) (fun arg1_yhat ->
+        bind_rev "_rev_cdf_arg" (trans env arg2) (fun arg2_yhat ->
+          bind_rev "_rev_cdf_arg" (trans env point) (fun point_yhat ->
+            let arg1_active = cdf_arg_active env arg1 in
+            let arg2_active = cdf_arg_active env arg2 in
+            let point_active = cdf_arg_active env point in
+            cdf_callback_reverse
+              (Distr2 (kind, primal arg1_yhat, primal arg2_yhat))
+              [arg1_active; arg2_active]
+              (primal point_yhat)
+              point_active
+              (fun pullbacks ->
+                 let tail = second pullbacks in
+                 let updates = [] in
+                 let updates =
+                   if arg1_active then
+                     add_adjoint arg1_yhat (first pullbacks) :: updates
+                   else updates
+                 in
+                 let updates =
+                   if arg2_active then
+                     add_adjoint arg2_yhat (first tail) :: updates
+                   else updates
+                 in
+                 let updates =
+                   if point_active then
+                     add_adjoint point_yhat (second tail) :: updates
+                   else updates
+                 in
+                 List.rev updates))))
 
 and trans_cdf_kernel env inputs ((_, _, TAExprNode ae) as te) k =
   match ae with
@@ -486,6 +563,8 @@ and prob_trans env ((_, _, TAExprNode ae) as te) kappa =
       bind_rev "_rev_yhat" (trans_cdf env dist point) kappa
   | CdfExpr (kernel, point) ->
       bind_rev "_rev_yhat" (trans_cdf_expr env kernel point) kappa
+  | CdfJvp _ | CdfVjp _ ->
+      unsupported "higher-order differentiation of CDF callback primitives is not implemented"
   | Sample _ ->
       unsupported "continuous Sample remained in program; run discretization before reverse AD"
   | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
@@ -804,6 +883,81 @@ and runtime_eval_cps env (ExprNode e) k =
       let dist = runtime_eval_dist env dist in
       runtime_eval_cps env point (fun v_point ->
         k (RFloat (Distributions.cdistr_cdf dist (runtime_as_float v_point))))
+  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+      runtime_eval_cps env point (fun point_value ->
+        runtime_eval_cps env point_tangent (fun point_tangent_value ->
+          let point = runtime_as_float point_value in
+          let point_tangent = runtime_as_float point_tangent_value in
+          try
+            match dist, tangent_dist with
+            | Distr1 (kind, arg), Distr1 (tangent_kind, darg)
+              when kind = tangent_kind ->
+                runtime_eval_cps env arg (fun arg_value ->
+                  runtime_eval_cps env darg (fun darg_value ->
+                    k
+                      (RFloat
+                         (Cdf_callback.jvp_single kind
+                            (runtime_as_float arg_value)
+                            (runtime_as_float darg_value)
+                            point point_tangent))))
+            | Distr2 (kind, arg1, arg2), Distr2 (tangent_kind, darg1, darg2)
+              when kind = tangent_kind ->
+                runtime_eval_args env [arg1; arg2; darg1; darg2] (function
+                  | [arg1; arg2; darg1; darg2] ->
+                      k
+                        (RFloat
+                           (Cdf_callback.jvp_two kind
+                              (runtime_as_float arg1)
+                              (runtime_as_float arg2)
+                              (runtime_as_float darg1)
+                              (runtime_as_float darg2)
+                              point point_tangent))
+                  | _ -> assert false)
+            | _ -> runtime_error "CDF JVP distribution kind mismatch"
+          with Cdf_callback.Unsupported msg -> runtime_error ("CDF JVP: " ^ msg)))
+  | CdfVjp
+      (dist, parameter_active, point, point_active, output_adjoint) ->
+      runtime_eval_args env [point; output_adjoint] (function
+        | [point_value; output_adjoint_value] ->
+            let point = runtime_as_float point_value in
+            let output_adjoint = runtime_as_float output_adjoint_value in
+            (try
+               match dist with
+               | Distr1 (kind, arg) ->
+                   let arg_active =
+                     match parameter_active with
+                     | [active] -> active
+                     | _ -> runtime_error "CDF VJP activity arity mismatch"
+                   in
+                   runtime_eval_cps env arg (fun arg_value ->
+                     let darg, dpoint =
+                       Cdf_callback.vjp_single kind
+                         (runtime_as_float arg_value)
+                         arg_active point point_active output_adjoint
+                     in
+                     k (RPair (RFloat darg, RFloat dpoint)))
+               | Distr2 (kind, arg1, arg2) ->
+                   let arg1_active, arg2_active =
+                     match parameter_active with
+                     | [active1; active2] -> active1, active2
+                     | _ -> runtime_error "CDF VJP activity arity mismatch"
+                   in
+                   runtime_eval_args env [arg1; arg2] (function
+                     | [arg1_value; arg2_value] ->
+                         let darg1, darg2, dpoint =
+                           Cdf_callback.vjp_two kind
+                             (runtime_as_float arg1_value)
+                             (runtime_as_float arg2_value)
+                             arg1_active arg2_active
+                             point point_active output_adjoint
+                         in
+                         k
+                           (RPair
+                              ( RFloat darg1
+                              , RPair (RFloat darg2, RFloat dpoint) ))
+                     | _ -> assert false)
+             with Cdf_callback.Unsupported msg -> runtime_error ("CDF VJP: " ^ msg))
+        | _ -> assert false)
   | CdfExpr _ ->
       runtime_error "CdfExpr is not supported by the concrete reverse evaluator"
 

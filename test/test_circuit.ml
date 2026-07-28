@@ -98,6 +98,15 @@ let rec contains_discrete (Slice.Ast.ExprNode expression) =
   | SpecialFunc (_, arguments) -> List.exists contains_discrete arguments
   | Cdf (distribution, point) ->
       contains_discrete_sample distribution || contains_discrete point
+  | CdfJvp (distribution, tangent_distribution, point, point_tangent) ->
+      contains_discrete_sample distribution
+      || contains_discrete_sample tangent_distribution
+      || contains_discrete point
+      || contains_discrete point_tangent
+  | CdfVjp (distribution, _, point, _, output_adjoint) ->
+      contains_discrete_sample distribution
+      || contains_discrete point
+      || contains_discrete output_adjoint
 
 and contains_discrete_sample = function
   | Slice.Ast.Distr1 (_, argument) -> contains_discrete argument

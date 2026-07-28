@@ -46,13 +46,24 @@ type 'a expr_generic =
   | Sub of 'a * 'a
   | Mul of 'a * 'a
   | Div of 'a * 'a
-  (* Internal generated special functions used by
-     closed-form AD of CDF expressions (e.g. erf, exp, etc.). e.g. allows for stuff like: CDF(gaussian(0, 1), theta) --> 0.5 * (1 + erf(theta / sqrt(2))).
-     These are not currently parsed from Slice syntax. *)
+  (* Internal generated special functions.  Named-distribution CDF AD now
+     uses opaque callback primitives below; these functions remain useful
+     for ordinary arithmetic AD and the legacy compound-kernel CDF rules.
+     They are not currently parsed from Slice syntax. *)
   | SpecialFunc of string * 'a list
   (* CDF of a continuous distribution evaluated at a point.
      Emitted only by the discretizer when symbolic cuts are present. *)
   | Cdf of 'a sample * 'a
+  (* Opaque forward- and reverse-mode derivative primitives for a named
+     distribution CDF.  [CdfJvp] stores the primal distribution, its
+     parameter tangents, the primal point, and the point tangent.
+     [CdfVjp] stores the primal distribution, parameter-activity flags,
+     primal point, point-activity flag, and output adjoint.  Activity is
+     static metadata so an exact callback need not evaluate unavailable
+     partials for inactive inputs.  Its result is a nested pair whose shape
+     follows the distribution arity. *)
+  | CdfJvp of 'a sample * 'a sample * 'a * 'a
+  | CdfVjp of 'a sample * bool list * 'a * bool * 'a
   (* CDF of an arbitrary (sample-containing) expression evaluated at
      a point.  Used when the kernel on the LHS of a comparison is a
      compound expression like [uniform() + uniform()] rather than a

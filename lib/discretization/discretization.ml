@@ -60,6 +60,21 @@ let rec texpr_to_expr ((_, _, TAExprNode ae) : texpr) : expr =
   | Div (e1, e2) -> ExprNode (Div (texpr_to_expr e1, texpr_to_expr e2))
   | SpecialFunc (name, args) -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args))
   | Cdf (d, e1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr e1))
+  | CdfJvp (d, dd, e1, de1) ->
+      ExprNode
+        (CdfJvp
+           ( sample_to_expr d
+           , sample_to_expr dd
+           , texpr_to_expr e1
+           , texpr_to_expr de1 ))
+  | CdfVjp (d, active, e1, point_active, bar) ->
+      ExprNode
+        (CdfVjp
+           ( sample_to_expr d
+           , active
+           , texpr_to_expr e1
+           , point_active
+           , texpr_to_expr bar ))
   | CdfExpr (k, e1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr e1))
 
 and sample_to_expr (d : texpr sample) : expr sample =
@@ -119,8 +134,22 @@ let rec texpr_contains_sample ((_, _, TAExprNode ae) : texpr) : bool =
   | DiscreteCase cases ->
       List.exists (fun (b, p) -> texpr_contains_sample b || texpr_contains_sample p) cases
   | Cdf (_, e1) -> texpr_contains_sample e1
+  | CdfJvp (d, dd, e1, de1) ->
+      sample_contains_sample d
+      || sample_contains_sample dd
+      || texpr_contains_sample e1
+      || texpr_contains_sample de1
+  | CdfVjp (d, _, e1, _, bar) ->
+      sample_contains_sample d
+      || texpr_contains_sample e1
+      || texpr_contains_sample bar
   | CdfExpr (k, e1) -> texpr_contains_sample k || texpr_contains_sample e1
   | SpecialFunc (_, args) -> List.exists texpr_contains_sample args
+
+and sample_contains_sample = function
+  | Distr1 (_, e1) -> texpr_contains_sample e1
+  | Distr2 (_, e1, e2) ->
+      texpr_contains_sample e1 || texpr_contains_sample e2
 
 (* If a float-typed expression has a single symbolic identity and a
    finite cut bag of symbolic cuts, return [Some (FinConst idx n)]
@@ -296,6 +325,21 @@ let discretize ?cut_order_at (e : texpr) : expr =
          | Some e -> e
          | None -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args)))
     | Cdf (d, te1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr te1))
+    | CdfJvp (d, dd, te1, dte1) ->
+        ExprNode
+          (CdfJvp
+             ( sample_to_expr d
+             , sample_to_expr dd
+             , texpr_to_expr te1
+             , texpr_to_expr dte1 ))
+    | CdfVjp (d, active, te1, point_active, bar) ->
+        ExprNode
+          (CdfVjp
+             ( sample_to_expr d
+             , active
+             , texpr_to_expr te1
+             , point_active
+             , texpr_to_expr bar ))
     | CdfExpr (k, te1) -> ExprNode (CdfExpr (texpr_to_expr k, texpr_to_expr te1))
 
     | Sample dist_exp ->

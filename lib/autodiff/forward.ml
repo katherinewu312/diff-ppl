@@ -125,6 +125,15 @@ let rec texpr_contains_sample (_, _, TAExprNode ae) =
       texpr_contains_sample e1 || texpr_contains_sample e2
   | Cdf (dist, point) ->
       sample_contains_sample dist || texpr_contains_sample point
+  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+      sample_contains_sample dist
+      || sample_contains_sample tangent_dist
+      || texpr_contains_sample point
+      || texpr_contains_sample point_tangent
+  | CdfVjp (dist, _, point, _, output_adjoint) ->
+      sample_contains_sample dist
+      || texpr_contains_sample point
+      || texpr_contains_sample output_adjoint
   | Not e1 | First e1 | Second e1 | Observe e1 | Ref e1 | Deref e1 ->
       texpr_contains_sample e1
   | Reset e1 -> texpr_contains_sample e1
@@ -158,6 +167,16 @@ let objective_dual ty dvalue =
 let rec sample_dual env = function
   | Distr1 (kind, e1) -> Distr1 (kind, det_ad env e1)
   | Distr2 (kind, e1, e2) -> Distr2 (kind, det_ad env e1, det_ad env e2)
+
+and sample_primal = function
+  | Distr1 (kind, e1) -> Distr1 (kind, dual_primal e1)
+  | Distr2 (kind, e1, e2) ->
+      Distr2 (kind, dual_primal e1, dual_primal e2)
+
+and sample_tangent = function
+  | Distr1 (kind, e1) -> Distr1 (kind, dual_tangent e1)
+  | Distr2 (kind, e1, e2) ->
+      Distr2 (kind, dual_tangent e1, dual_tangent e2)
 
 and cdf_kernel_dual env ((_, _, TAExprNode ae) as te) =
   match ae with
@@ -258,9 +277,20 @@ and det_ad env (ty, eff, TAExprNode ae) =
   | Unit -> unit_
 
   | Cdf (dist_exp, point) ->
-      Cdf_derivative.cdf (sample_dual env dist_exp) (det_ad env point)
+      let dual_dist = sample_dual env dist_exp in
+      let dual_point = det_ad env point in
+      pair
+        (node (Cdf (sample_primal dual_dist, dual_primal dual_point)))
+        (node
+           (CdfJvp
+              ( sample_primal dual_dist
+              , sample_tangent dual_dist
+              , dual_primal dual_point
+              , dual_tangent dual_point )))
   | CdfExpr (kernel, point) ->
       Cdf_derivative.cdf_expr (cdf_kernel_dual env kernel) (det_ad env point)
+  | CdfJvp _ | CdfVjp _ ->
+      unsupported "higher-order differentiation of CDF callback primitives is not implemented"
   | SpecialFunc (name, args) ->
       let dargs = List.map (det_ad env) args in
       let primal_args = List.map dual_primal dargs in
@@ -397,7 +427,7 @@ and trans env ((_, _, TAExprNode ae) as te) k =
         trans env e2 (fun d2 -> k (node (Assign (d1, d2)))))
 
   | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil
-  | Unit | Cdf _ | CdfExpr _ | SpecialFunc _
+  | Unit | Cdf _ | CdfJvp _ | CdfVjp _ | CdfExpr _ | SpecialFunc _
   | RuntimeError _ ->
       k (det_ad env te)
 

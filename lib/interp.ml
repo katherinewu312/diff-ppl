@@ -252,6 +252,72 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
       in
       VFloat (Distributions.cdistr_cdf dist x)
 
+  | CdfJvp (dist_exp, tangent_dist_exp, e_point, e_point_tangent) ->
+      let x = float_value "CdfJvp: point argument" (eval env e_point) in
+      let dx =
+        float_value "CdfJvp: point tangent" (eval env e_point_tangent)
+      in
+      (try
+         match dist_exp, tangent_dist_exp with
+         | Distr1 (kind, arg), Distr1 (tangent_kind, darg)
+           when kind = tangent_kind ->
+             let arg = float_value "CdfJvp: distribution argument" (eval env arg) in
+             let darg =
+               float_value "CdfJvp: distribution tangent" (eval env darg)
+             in
+             VFloat (Cdf_callback.jvp_single kind arg darg x dx)
+         | Distr2 (kind, arg1, arg2), Distr2 (tangent_kind, darg1, darg2)
+           when kind = tangent_kind ->
+             let arg1 = float_value "CdfJvp: first distribution argument" (eval env arg1) in
+             let arg2 = float_value "CdfJvp: second distribution argument" (eval env arg2) in
+             let darg1 = float_value "CdfJvp: first distribution tangent" (eval env darg1) in
+             let darg2 = float_value "CdfJvp: second distribution tangent" (eval env darg2) in
+             VFloat (Cdf_callback.jvp_two kind arg1 arg2 darg1 darg2 x dx)
+         | _ ->
+             raise (RuntimeError "CdfJvp: primal and tangent distributions must have the same kind")
+       with Cdf_callback.Unsupported msg -> raise (RuntimeError ("CdfJvp: " ^ msg)))
+
+  | CdfVjp
+      (dist_exp, parameter_active, e_point, point_active, e_output_adjoint) ->
+      let x = float_value "CdfVjp: point argument" (eval env e_point) in
+      let output_adjoint =
+        float_value "CdfVjp: output adjoint" (eval env e_output_adjoint)
+      in
+      (try
+         match dist_exp with
+         | Distr1 (kind, arg) ->
+             let arg_active =
+               match parameter_active with
+               | [active] -> active
+               | _ ->
+                   raise
+                     (RuntimeError
+                        "CdfVjp: parameter activity arity does not match distribution")
+             in
+             let arg = float_value "CdfVjp: distribution argument" (eval env arg) in
+             let darg, dpoint =
+               Cdf_callback.vjp_single kind arg arg_active
+                 x point_active output_adjoint
+             in
+             VPair (VFloat darg, VFloat dpoint)
+         | Distr2 (kind, arg1, arg2) ->
+             let arg1_active, arg2_active =
+               match parameter_active with
+               | [active1; active2] -> active1, active2
+               | _ ->
+                   raise
+                     (RuntimeError
+                        "CdfVjp: parameter activity arity does not match distribution")
+             in
+             let arg1 = float_value "CdfVjp: first distribution argument" (eval env arg1) in
+             let arg2 = float_value "CdfVjp: second distribution argument" (eval env arg2) in
+             let darg1, darg2, dpoint =
+               Cdf_callback.vjp_two kind arg1 arg2 arg1_active arg2_active
+                 x point_active output_adjoint
+             in
+             VPair (VFloat darg1, VPair (VFloat darg2, VFloat dpoint))
+       with Cdf_callback.Unsupported msg -> raise (RuntimeError ("CdfVjp: " ^ msg)))
+
   | CdfExpr (_, _) ->
       raise (RuntimeError "CdfExpr cannot be evaluated by the reference interpreter: kernel CDFs do not have closed-form numeric evaluation here")
 
@@ -260,7 +326,11 @@ and arith_eval env e1 e2 op op_name =
   let v2 = eval env e2 in
   (match v1, v2 with
    | VFloat f1, VFloat f2 -> VFloat (op f1 f2)
-   | _ -> raise (RuntimeError (Printf.sprintf "Type error during evaluation: %s expects floats" op_name)))
+       | _ -> raise (RuntimeError (Printf.sprintf "Type error during evaluation: %s expects floats" op_name)))
+
+and float_value label = function
+  | VFloat f -> f
+  | _ -> raise (RuntimeError (label ^ " must be a float"))
 
 and eval_dist env dist_exp = 
   match dist_exp with

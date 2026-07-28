@@ -460,8 +460,13 @@ let test_forward_uniform_cdf_gradient_simplifies _ =
 
 let test_forward_gaussian_cdf_dual_simplifies _ =
   let raw = forward_dual_raw_after_discretize "gaussian(0, 1) < theta" in
-  assert_bool "raw gaussian CDF AD should expose an erf closed form"
-    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "erf(");
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw gaussian CDF AD should preserve an opaque primal CDF"
+    (contains_substring raw_plain "CDF(gaussian");
+  assert_bool "raw gaussian CDF AD should emit a JVP callback"
+    (contains_substring raw_plain "CDF_JVP(");
+  assert_bool "raw gaussian CDF AD should not expand an erf closed form"
+    (not (contains_substring raw_plain "erf("));
   let dual = forward_dual_after_discretize "gaussian(0, 1) < theta" in
   let primal, tangent = eval_dual_with_theta 0.0 dual in
   assert_equal
@@ -485,8 +490,13 @@ let test_reverse_uniform_cdf_dual_simplifies _ =
 
 let test_reverse_gaussian_cdf_dual_simplifies _ =
   let raw = reverse_dual_raw_after_discretize "gaussian(0, 1) < theta" in
-  assert_bool "raw reverse gaussian CDF AD should expose an erf closed form"
-    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "erf(");
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw reverse gaussian CDF AD should preserve an opaque primal CDF"
+    (contains_substring raw_plain "CDF(gaussian");
+  assert_bool "raw reverse gaussian CDF AD should emit a VJP callback"
+    (contains_substring raw_plain "CDF_VJP(");
+  assert_bool "raw reverse gaussian CDF AD should not expand an erf closed form"
+    (not (contains_substring raw_plain "erf("));
   let dual = reverse_dual_after_discretize "gaussian(0, 1) < theta" in
   let primal, gradient =
     eval_dual_vector_with_env ["theta", Slice.Ast.VFloat 0.0] dual
@@ -608,8 +618,11 @@ let test_forward_weighted_gamma_sum_cdf_expr_simplifies _ =
 
 let test_forward_beta_cdf_dual_simplifies_at _ =
   let raw = forward_dual_raw_after_discretize "beta(2, 3) < theta" in
-  assert_bool "raw beta CDF AD should expose a beta_inc closed form"
-    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "beta_inc(");
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "raw beta CDF AD should emit a JVP callback"
+    (contains_substring raw_plain "CDF_JVP(");
+  assert_bool "raw beta CDF AD should not expand an incomplete-beta formula"
+    (not (contains_substring raw_plain "beta_inc("));
   let _, simplified =
     forward_dual_after_discretize_at "theta" 0.4 "beta(2, 3) < theta"
   in
@@ -632,6 +645,91 @@ let test_forward_beta_cdf_dual_simplifies_at _ =
       assert_failure
         ("expected beta AD-at output to be a constant dual pair, got: "
          ^ Slice.Pretty.string_of_expr_plain simplified)
+
+let test_forward_log_normal_parameter_jvp_uses_callback _ =
+  let source = "lognormal(mu, 1) < 1" in
+  let dual =
+    forward_dual_with_seeds (seeds ["mu", 1.0]) source
+  in
+  let primal, tangent =
+    eval_dual_with_env ["mu", Slice.Ast.VFloat 0.0] dual
+  in
+  assert_close 0.5 primal;
+  assert_close (-0.3989422804014327) tangent
+
+let test_reverse_log_normal_parameter_vjp_uses_callback _ =
+  let source = "lognormal(mu, 1) < 1" in
+  let transformed = transform source in
+  let typed = infer_with_cuts transformed in
+  let raw =
+    Slice.Reverse.dual_expectation_raw
+      ~seeds:(seeds ["mu", 1.0])
+      typed
+  in
+  assert_bool "reverse CDF AD should contain an opaque VJP primitive"
+    (contains_substring (Slice.Pretty.string_of_expr_plain raw) "CDF_VJP(");
+  let dual =
+    Slice.Reverse.dual_expectation
+      ~seeds:(seeds ["mu", 1.0])
+      typed
+  in
+  let primal, tangent =
+    eval_dual_with_env ["mu", Slice.Ast.VFloat 0.0] dual
+  in
+  assert_close 0.5 primal;
+  assert_close (-0.3989422804014327) tangent
+
+let test_exact_gaussian_parameter_jvp_callback _ =
+  let pi = 4.0 *. atan 1.0 in
+  let at_mean =
+    Slice.Cdf_callback.jvp_two
+      Slice.Ast.DGaussian 1.0 2.0 1.0 0.0 1.0 0.0
+  in
+  assert_close (-1.0 /. (2.0 *. sqrt (2.0 *. pi))) at_mean;
+  let one_sigma =
+    Slice.Cdf_callback.jvp_two
+      Slice.Ast.DGaussian 1.0 2.0 0.0 1.0 3.0 0.0
+  in
+  assert_close (-.exp (-0.5) /. (2.0 *. sqrt (2.0 *. pi))) one_sigma
+
+let test_exact_gamma_scale_jvp_callback _ =
+  let actual =
+    Slice.Cdf_callback.jvp_two
+      Slice.Ast.DGamma 2.0 3.0 0.0 1.0 6.0 0.0
+  in
+  assert_close (-4.0 /. 3.0 *. exp (-2.0)) actual
+
+let test_reverse_beta_point_vjp_skips_inactive_shapes _ =
+  let dual = reverse_dual_after_discretize "beta(2, 3) < theta" in
+  let primal, gradient =
+    eval_dual_vector_with_env ["theta", Slice.Ast.VFloat 0.4] dual
+  in
+  assert_close 0.5248 primal;
+  assert_float_list_close [1.728] gradient
+
+let test_beta_shape_jvp_requires_exact_callback _ =
+  assert_raises
+    (Slice.Cdf_callback.Unsupported
+       "no exact CDF parameter derivative callback is implemented for beta shape parameters")
+    (fun () ->
+       ignore
+         (Slice.Cdf_callback.jvp_two
+            Slice.Ast.DBeta 2.0 3.0 1.0 0.0 0.4 0.0))
+
+let test_forward_student_t_point_jvp_uses_pdf_callback _ =
+  let dual = forward_dual_after_discretize "tdist(3) < theta" in
+  let primal, tangent = eval_dual_with_theta 0.0 dual in
+  assert_close 0.5 primal;
+  assert_close (2.0 /. (4.0 *. atan 1.0 *. sqrt 3.0)) tangent
+
+let test_forward_uniform_parameter_jvp_includes_support_boundary _ =
+  let source = "uniform(lo, 1) < 0.5" in
+  let dual = forward_dual_with_seeds (seeds ["lo", 1.0]) source in
+  let primal, tangent =
+    eval_dual_with_env ["lo", Slice.Ast.VFloat 0.0] dual
+  in
+  assert_close 0.5 primal;
+  assert_close (-0.5) tangent
 
 let test_forward_dual_at_substitutes_raw_and_simplifies _ =
   let raw, simplified =
@@ -1129,6 +1227,22 @@ let suite =
   ; "test_forward_gaussian_affine_sum_cdf_expr_simplifies" >:: test_forward_gaussian_affine_sum_cdf_expr_simplifies
   ; "test_forward_weighted_gamma_sum_cdf_expr_simplifies" >:: test_forward_weighted_gamma_sum_cdf_expr_simplifies
   ; "test_forward_beta_cdf_dual_simplifies_at" >:: test_forward_beta_cdf_dual_simplifies_at
+  ; "test_forward_log_normal_parameter_jvp_uses_callback"
+      >:: test_forward_log_normal_parameter_jvp_uses_callback
+  ; "test_reverse_log_normal_parameter_vjp_uses_callback"
+      >:: test_reverse_log_normal_parameter_vjp_uses_callback
+  ; "test_exact_gaussian_parameter_jvp_callback"
+      >:: test_exact_gaussian_parameter_jvp_callback
+  ; "test_exact_gamma_scale_jvp_callback"
+      >:: test_exact_gamma_scale_jvp_callback
+  ; "test_reverse_beta_point_vjp_skips_inactive_shapes"
+      >:: test_reverse_beta_point_vjp_skips_inactive_shapes
+  ; "test_beta_shape_jvp_requires_exact_callback"
+      >:: test_beta_shape_jvp_requires_exact_callback
+  ; "test_forward_student_t_point_jvp_uses_pdf_callback"
+      >:: test_forward_student_t_point_jvp_uses_pdf_callback
+  ; "test_forward_uniform_parameter_jvp_includes_support_boundary"
+      >:: test_forward_uniform_parameter_jvp_includes_support_boundary
   ; "test_forward_dual_at_substitutes_raw_and_simplifies" >:: test_forward_dual_at_substitutes_raw_and_simplifies
   ; "test_forward_dual_at_can_use_non_theta_parameter" >:: test_forward_dual_at_can_use_non_theta_parameter
   ; "test_forward_infers_single_non_theta_seed" >:: test_forward_infers_single_non_theta_seed

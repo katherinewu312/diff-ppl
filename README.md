@@ -112,6 +112,37 @@ prints the seeded tangent and `--ad-dual` prints `(primal, tangent)`.
 With `--print-all`, AD modes also print the raw source-to-source AD program
 before the simplified AD output.
 
+Named-distribution CDFs remain opaque primitives in source-to-source AD.
+Forward mode emits `CDF_JVP` and reverse mode emits `CDF_VJP`; the primal
+`CDF` continues to use GSL. At runtime, the callbacks apply the Leibniz rule
+
+```text
+d CDF(params, x)
+  = PDF(params, x) * dx
+  + integral(-infinity, x, d PDF(params, t))
+```
+
+The implementation does not evaluate this integral numerically.  Instead, the
+callback library contains exact formulas obtained by resolving the Leibniz
+integral analytically.  Point derivatives use the GSL density.  Exact
+parameter callbacks are implemented for Uniform, Gaussian, Exponential,
+LogNormal, Laplace, Cauchy, Pareto, Weibull, Logistic, Gumbel1, Gumbel2, and
+Rayleigh; Gamma scale and Exppow scale are also supported exactly.
+
+There is no quadrature or finite-difference fallback.  An active Beta shape,
+Gamma shape, Student-t degrees-of-freedom, Chi-square degrees-of-freedom, or
+Exppow shape direction reports that no exact callback is implemented.  Reverse
+VJP nodes carry static activity metadata so unsupported inactive parameters do
+not prevent an exact point or supported-parameter derivative.  Poisson and
+Binomial are rejected when differentiated because the ordinary
+continuous-density Leibniz rule does not apply to atoms.  Uniform and Pareto
+callbacks also reject active directions at their nondifferentiable support
+boundaries.
+
+`CDF_EXPR` nodes for compound random kernels still use the older structural
+rules for the recognized Gaussian, Gamma, uniform-sum, and uniform-product
+forms.
+
 **** It is best to give a concrete PARAM=VALUE at runtime. Even though symbolic expressions like theta -> d/dtheta E[X(theta)] _can_ be produced, such expressions may not always be correct (i.e. the ordering of the cuts of an expression may get messed up, causing problems in the discretization and hence the AD transformation). ****
 
 *** Currently, every differentiable input variable is assumed to be a scalar float.

@@ -592,7 +592,7 @@ let rec lower_expr builder env ((ty, _effect, TAExprNode expression) : texpr) =
   | Pair _ | First _ | Second _ -> unsupported "pairs"
   | Unit -> unsupported "unit values"
   | SpecialFunc _ -> unsupported "special functions"
-  | Cdf _ | CdfExpr _ -> unsupported "CDF expressions"
+  | Cdf _ | CdfJvp _ | CdfVjp _ | CdfExpr _ -> unsupported "CDF expressions"
   | RuntimeError _ -> unsupported "runtime errors"
   | Reset _ | Shift _ -> unsupported "internal reverse-AD operators"
 

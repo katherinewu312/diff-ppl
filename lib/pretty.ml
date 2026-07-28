@@ -119,6 +119,14 @@ let rec string_of_expr_plain (ExprNode e : expr) : string =
   | SpecialFunc (name, args) ->
       Printf.sprintf "%s(%s)" name (String.concat ", " (List.map string_of_expr_plain args))
   | Cdf (d, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_sample_plain d) (string_of_expr_plain e1)
+  | CdfJvp (d, dd, e1, de1) ->
+      Printf.sprintf "CDF_JVP(%s, %s; %s, %s)"
+        (string_of_sample_plain d) (string_of_expr_plain e1)
+        (string_of_sample_plain dd) (string_of_expr_plain de1)
+  | CdfVjp (d, _, e1, _, bar) ->
+      Printf.sprintf "CDF_VJP(%s, %s; %s)"
+        (string_of_sample_plain d) (string_of_expr_plain e1)
+        (string_of_expr_plain bar)
   | CdfExpr (k, e1) -> Printf.sprintf "CDF(%s, %s)" (string_of_expr_plain k) (string_of_expr_plain e1)
 
 and string_of_sample_plain = function
@@ -301,6 +309,16 @@ and string_of_expr_node ?(indent=0) (ExprNode expr_node) : string =
   | Cdf (d, e1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_sample ~indent d) (string_of_expr_indented ~indent e1)
+  | CdfJvp (d, dd, e1, de1) ->
+      Printf.sprintf "%sCDF_JVP%s(%s, %s; %s, %s)"
+        keyword_color reset_color
+        (string_of_sample ~indent d) (string_of_expr_indented ~indent e1)
+        (string_of_sample ~indent dd) (string_of_expr_indented ~indent de1)
+  | CdfVjp (d, _, e1, _, bar) ->
+      Printf.sprintf "%sCDF_VJP%s(%s, %s; %s)"
+        keyword_color reset_color
+        (string_of_sample ~indent d) (string_of_expr_indented ~indent e1)
+        (string_of_expr_indented ~indent bar)
   | CdfExpr (k, e1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_expr_indented ~indent k) (string_of_expr_indented ~indent e1)
@@ -469,6 +487,16 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
   | Cdf (d, te1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_asample ~indent d) (string_of_texpr_indented ~indent te1)
+  | CdfJvp (d, dd, te1, dte1) ->
+      Printf.sprintf "%sCDF_JVP%s(%s, %s; %s, %s)"
+        keyword_color reset_color
+        (string_of_asample ~indent d) (string_of_texpr_indented ~indent te1)
+        (string_of_asample ~indent dd) (string_of_texpr_indented ~indent dte1)
+  | CdfVjp (d, _, te1, _, bar) ->
+      Printf.sprintf "%sCDF_VJP%s(%s, %s; %s)"
+        keyword_color reset_color
+        (string_of_asample ~indent d) (string_of_texpr_indented ~indent te1)
+        (string_of_texpr_indented ~indent bar)
   | CdfExpr (k, te1) ->
       Printf.sprintf "%sCDF%s(%s, %s)"
         keyword_color reset_color (string_of_texpr_indented ~indent k) (string_of_texpr_indented ~indent te1)

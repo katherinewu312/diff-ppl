@@ -147,6 +147,21 @@ and det env (_ty, eff, TAExprNode ae) =
   | Seq (e1, e2) -> node (Seq (det env e1, det env e2))
   | Unit -> unit_
   | Cdf (dist, point) -> cdf_primal (det_sample env dist) (det env point)
+  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+      node
+        (CdfJvp
+           ( det_sample env dist
+           , det_sample env tangent_dist
+           , det env point
+           , det env point_tangent ))
+  | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->
+      node
+        (CdfVjp
+           ( det_sample env dist
+           , parameter_active
+           , det env point
+           , point_active
+           , det env output_adjoint ))
   | CdfExpr (kernel, point) -> cdf_expr_primal (det env kernel) (det env point)
   | RuntimeError msg -> node (RuntimeError msg)
   | Reset _ | Shift _ ->
@@ -267,7 +282,7 @@ and prob_trans env ((_, _, TAExprNode ae) as te) k =
     | Assign (e1, e2) ->
         prob_trans env e1 (fun v1 ->
           prob_trans env e2 (fun v2 -> k (node (Assign (v1, v2)))))
-    | Cdf _ | CdfExpr _ ->
+    | Cdf _ | CdfJvp _ | CdfVjp _ | CdfExpr _ ->
         k (det env te)
     | Const _ | BoolConst _ | Var _ | Fun _ | Fix _ | FinConst _ | Nil | Unit
     | RuntimeError _ ->

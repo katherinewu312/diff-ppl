@@ -183,6 +183,77 @@ let infer (e : expr) : typed_expr =
         mk (fresh_float_ty ())
           (join [dist_eff; eff_of typed_point])
           (Cdf (typed_dist, typed_point))
+    | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+        let infer_arg arg name =
+          let ((ty, _, _) as typed) = aux env arg in
+          expect_float ty
+            (fun msg -> "Type error in CDF JVP " ^ name ^ ": " ^ msg);
+          typed
+        in
+        let infer_sample label = function
+          | Distr1 (kind, e1) ->
+              Distr1 (kind, infer_arg e1 (label ^ " argument"))
+          | Distr2 (kind, e1, e2) ->
+              Distr2
+                ( kind
+                , infer_arg e1 (label ^ " first argument")
+                , infer_arg e2 (label ^ " second argument") )
+        in
+        let typed_dist = infer_sample "distribution" dist in
+        let typed_tangent_dist = infer_sample "distribution tangent" tangent_dist in
+        let typed_point = infer_arg point "point argument" in
+        let typed_point_tangent = infer_arg point_tangent "point tangent" in
+        let sample_effect = function
+          | Distr1 (_, e1) -> eff_of e1
+          | Distr2 (_, e1, e2) -> join [eff_of e1; eff_of e2]
+        in
+        mk (fresh_float_ty ())
+          (join
+             [ sample_effect typed_dist
+             ; sample_effect typed_tangent_dist
+             ; eff_of typed_point
+             ; eff_of typed_point_tangent
+             ])
+          (CdfJvp
+             (typed_dist, typed_tangent_dist, typed_point, typed_point_tangent))
+    | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->
+        let infer_arg arg name =
+          let ((ty, _, _) as typed) = aux env arg in
+          expect_float ty
+            (fun msg -> "Type error in CDF VJP " ^ name ^ ": " ^ msg);
+          typed
+        in
+        let typed_dist, dist_eff, result_ty =
+          match dist with
+          | Distr1 (kind, e1) ->
+              let te1 = infer_arg e1 "distribution argument" in
+              ( Distr1 (kind, te1)
+              , eff_of te1
+              , TPair (fresh_float_ty (), fresh_float_ty ()) )
+          | Distr2 (kind, e1, e2) ->
+              let te1 = infer_arg e1 "first distribution argument" in
+              let te2 = infer_arg e2 "second distribution argument" in
+              ( Distr2 (kind, te1, te2)
+              , join [eff_of te1; eff_of te2]
+              , TPair
+                  ( fresh_float_ty ()
+                  , TPair (fresh_float_ty (), fresh_float_ty ()) ) )
+        in
+        let typed_point = infer_arg point "point argument" in
+        let typed_output_adjoint = infer_arg output_adjoint "output adjoint" in
+        let expected_activity_arity =
+          match dist with Distr1 _ -> 1 | Distr2 _ -> 2
+        in
+        if List.length parameter_active <> expected_activity_arity then
+          failwith "CDF VJP parameter activity arity does not match distribution arity";
+        mk result_ty
+          (join [dist_eff; eff_of typed_point; eff_of typed_output_adjoint])
+          (CdfVjp
+             ( typed_dist
+             , parameter_active
+             , typed_point
+             , point_active
+             , typed_output_adjoint ))
     | CdfExpr (kernel, point) ->
         let infer_arg arg name =
           let ((ty, _, _) as typed) = aux env arg in
@@ -559,6 +630,21 @@ let rec erase ((_, _, TAExprNode node) : typed_expr) : expr =
   | Div (e1, e2) -> expr (Div (erase e1, erase e2))
   | SpecialFunc (name, args) -> expr (SpecialFunc (name, List.map erase args))
   | Cdf (dist, point) -> expr (Cdf (erase_sample dist, erase point))
+  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+      expr
+        (CdfJvp
+           ( erase_sample dist
+           , erase_sample tangent_dist
+           , erase point
+           , erase point_tangent ))
+  | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->
+      expr
+        (CdfVjp
+           ( erase_sample dist
+           , parameter_active
+           , erase point
+           , point_active
+           , erase output_adjoint ))
   | CdfExpr (kernel, point) -> expr (CdfExpr (erase kernel, erase point))
 
 and erase_sample = function
