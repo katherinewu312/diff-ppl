@@ -1221,6 +1221,83 @@ let test_discretize_at_orders_theta_before_theta_plus_one _ =
     points;
   assert_nested_cut_indices (1, 3) (2, 3) transformed
 
+let top_discrete_probabilities = function
+  | Slice.Ast.ExprNode
+      (Slice.Ast.Let
+         (_, Slice.Ast.ExprNode (Slice.Ast.DiscreteCase cases), _)) ->
+      List.map (function
+        | _, Slice.Ast.ExprNode (Slice.Ast.Const p) -> p
+        | _ -> assert_failure "expected constant exact region probability") cases
+  | e ->
+      assert_failure
+        ("expected a top-level region distribution, got: "
+         ^ Slice.Pretty.string_of_expr_plain e)
+
+let rec count_region_distributions (Slice.Ast.ExprNode node) =
+  match node with
+  | Slice.Ast.Let
+      (name, Slice.Ast.ExprNode (Slice.Ast.DiscreteCase _), body)
+      when contains_substring name "__region" ->
+      1 + count_region_distributions body
+  | _ -> 0
+
+let test_generalized_affine_uniform_sum _ =
+  let transformed = transform "uniform(0, 1) + uniform(0, 2) < 0.5" in
+  match top_discrete_probabilities transformed with
+  | [p; q] -> assert_close (1.0 /. 16.0) p; assert_close (15.0 /. 16.0) q
+  | _ -> assert_failure "expected exactly two affine regions"
+
+let test_generalized_separate_components _ =
+  let source =
+    "let x = uniform(0,1) in let y = uniform(0,1) in \
+     let a = x*x + y*y in let u = uniform(0,1) in \
+     let v = uniform(0,1) in let b = u+v in (a<0.3,b<0.5)"
+  in
+  let parsed = Slice.Parse.parse_expr source in
+  let components =
+    parsed |> Slice.Generalized_discretization.analyze
+    |> Slice.Generalized_discretization.build_components
+  in
+  assert_equal 2 (List.length components);
+  assert_equal 2 (count_region_distributions (transform source))
+
+let test_generalized_six_correlated_regions _ =
+  let source =
+    "let x=uniform(0,1) in let y=uniform(0,1) in let z=x*x+y*y in \
+     if z<0.3 then x<0.2 else z<0.8"
+  in
+  let expected =
+    [ 0.10705902136110443; 0.12856042765813006
+    ; 0.07032431986896154; 0.32237476182976260
+    ; 0.02261665876993405; 0.34906481051210736 ]
+  in
+  let actual = top_discrete_probabilities (transform source) in
+  assert_equal 6 (List.length actual);
+  List.iter2 (assert_close ~eps:1e-8) expected actual
+
+let test_generalized_repeated_sample_identity _ =
+  match top_discrete_probabilities
+          (transform "let x=uniform(0,1) in x*x < 0.25") with
+  | [p; q] -> assert_close 0.5 p; assert_close 0.5 q
+  | _ -> assert_failure "x*x should produce two exact regions for one sample"
+
+let test_generalized_unsupported_product_is_explicit _ =
+  try
+    ignore (transform "uniform(0,1) * uniform(0,1) < 0.25");
+    assert_failure "unsupported product predicate should not be approximated"
+  with Failure msg ->
+    assert_bool msg (contains_substring msg "Generalized discretization unsupported")
+
+let test_extended_float_pretty_prints_provenance _ =
+  let typed =
+    Slice.Parse.parse_expr "let x=uniform(0,1) in x*x"
+    |> infer_with_cuts
+    |> Slice.Pretty.string_of_texpr
+  in
+  assert_bool "primitive provenance should be printed" (contains_substring typed "u0");
+  assert_bool "repeated uses should retain one sampling-site identity"
+    (not (contains_substring typed "u1"))
+
 let suite =
   "Slice transformation tests" >:::
   [ "test_symbolic_evaluator_reduces_nontrivial_lets"
@@ -1294,6 +1371,12 @@ let suite =
   ; "test_forward_recursive_list_sum_simplifies_at" >:: test_forward_recursive_list_sum_simplifies_at
   ; "test_discretize_at_orders_theta_squared_before_theta" >:: test_discretize_at_orders_theta_squared_before_theta
   ; "test_discretize_at_orders_theta_before_theta_plus_one" >:: test_discretize_at_orders_theta_before_theta_plus_one
+  ; "test_generalized_affine_uniform_sum" >:: test_generalized_affine_uniform_sum
+  ; "test_generalized_separate_components" >:: test_generalized_separate_components
+  ; "test_generalized_six_correlated_regions" >:: test_generalized_six_correlated_regions
+  ; "test_generalized_repeated_sample_identity" >:: test_generalized_repeated_sample_identity
+  ; "test_generalized_unsupported_product_is_explicit" >:: test_generalized_unsupported_product_is_explicit
+  ; "test_extended_float_pretty_prints_provenance" >:: test_extended_float_pretty_prints_provenance
   ]
 
 let () = run_test_tt_main suite

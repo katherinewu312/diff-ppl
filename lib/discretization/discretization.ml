@@ -86,7 +86,7 @@ and sample_to_expr (d : texpr sample) : expr sample =
    shape mismatch. *)
 let cut_bag_of (ty : ty) (msg : string) : CutLat.bag =
   match Ast.force ty with
-  | TFloat (b, _, _) -> b
+  | TFloat (b, _, _, _) -> b
   | _ -> failwith ("Type error: " ^ msg)
 
 (*
@@ -157,7 +157,7 @@ and sample_contains_sample = function
    Otherwise return [None]. *)
 let try_finconst_from_sym ?cut_order_at (ty : ty) : expr option =
   match Ast.force ty with
-  | TFloat (cut_bag, _, sym_bag) ->
+  | TFloat (cut_bag, _, sym_bag, _) ->
     (match CutLat.get cut_bag, SymLat.get sym_bag with
      | Finite cut_set, Finite sym_set
        when not (CutSet.is_empty cut_set)
@@ -201,7 +201,7 @@ let try_emit_kernel_discrete ?cut_order_at (ty : ty) (kernel_expr : expr) (te : 
   if not (texpr_contains_sample te) then None
   else
     match Ast.force ty with
-    | TFloat (cut_bag, _, _) ->
+    | TFloat (cut_bag, _, _, _) ->
       (match CutLat.get cut_bag with
        | Top -> None
        | Finite cut_set when CutSet.is_empty cut_set -> None
@@ -376,7 +376,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
           let param_has_sym (param_texpr : texpr) : bool =
             let param_ty, _, _ = param_texpr in
             match Ast.force param_ty with
-            | TFloat (_, _, sym_bag) ->
+            | TFloat (_, _, sym_bag, _) ->
               (match SymLat.get sym_bag with
                | Top -> false
                | Finite s -> not (SymSet.is_empty s))
@@ -464,7 +464,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
             let get_possible_floats_from_param (param_texpr : texpr) : float list option =
               let param_ty, _, _ = param_texpr in
               match Ast.force param_ty with
-              | TFloat (_, consts_bag_ref, _) ->
+              | TFloat (_, consts_bag_ref, _, _) ->
                 (match FloatLat.get consts_bag_ref with
                  | Finite float_set ->
                    if FloatSet.is_empty float_set then None
@@ -476,7 +476,7 @@ let discretize ?cut_order_at (e : texpr) : expr =
             let get_param_modulus_and_cuts (param_texpr : texpr) : (int * cut list) option =
               let param_ty, _, _ = param_texpr in
               match Ast.force param_ty with
-              | TFloat (b_bag, _, _) ->
+              | TFloat (b_bag, _, _, _) ->
                 (match CutLat.get b_bag with
                  | Top -> None
                  | Finite bs_set ->
@@ -522,7 +522,11 @@ let discretize ?cut_order_at (e : texpr) : expr =
                       let param_consts_bag_for_f = FloatLat.create (Finite (FloatSet.singleton f_val)) in
                       let param_cuts_bag_for_f = CutLat.create (Finite (CutSet.of_list param_actual_cuts)) in
                       let param_sym_bag_for_f = SymLat.create (Finite SymSet.empty) in
-                      let texpr_const_f_val = (TFloat(param_cuts_bag_for_f, param_consts_bag_for_f, param_sym_bag_for_f), Pure, TAExprNode (Const f_val)) in
+                      let texpr_const_f_val =
+                        (TFloat (param_cuts_bag_for_f, param_consts_bag_for_f,
+                                 param_sym_bag_for_f, Ast.fresh_prov_bag ()),
+                         Pure, TAExprNode (Const f_val))
+                      in
                       let target_finconst_expr = aux texpr_const_f_val in
                       let body = build_body_fn f_val in
                       (target_finconst_expr, body)
@@ -697,6 +701,17 @@ let discretize ?cut_order_at (e : texpr) : expr =
   aux e
 
 let discretize_top ?cut_order_at (e : Cut_inference.cut_annotated_expr) : expr =
-  let (return_type, _, _) = e in
-  Ast.set_cut_bags_to_top return_type;
-  discretize ?cut_order_at e
+  match Generalized_discretization.transform (texpr_to_expr e) with
+  | None ->
+      let (return_type, _, _) = e in
+      Ast.set_cut_bags_to_top return_type;
+      discretize ?cut_order_at e
+  | Some generalized ->
+      (* Re-run the legacy analysis so any components left untouched by the
+         joint pass retain precisely the old scalar-cut behavior. *)
+      let annotated =
+        generalized |> Inference.infer |> Cut_inference.analyze
+      in
+      let (return_type, _, _) = annotated in
+      Ast.set_cut_bags_to_top return_type;
+      discretize ?cut_order_at annotated

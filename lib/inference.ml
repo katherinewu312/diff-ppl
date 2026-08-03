@@ -15,7 +15,8 @@ let fresh_float_ty () =
   TFloat
     ( Ast.fresh_cut_bag ()
     , Lats.fresh_float_bag ()
-    , Ast.fresh_sym_bag () )
+    , Ast.fresh_sym_bag ()
+    , Ast.fresh_prov_bag () )
 
 (* Enforce [t_sub <: t_super] using only type shape and effects. *)
 let rec sub_type (t_sub : ty) (t_super : ty) : unit =

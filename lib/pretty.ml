@@ -508,7 +508,7 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
 
 and string_of_ty = function
   | TBool -> Printf.sprintf "%sbool%s" type_color reset_color
-  | TFloat (cut_bag_ref, const_bag_ref, sym_bag_ref) ->
+  | TFloat (cut_bag_ref, const_bag_ref, sym_bag_ref, prov_bag_ref) ->
       let bounds_str =
         match Ast.CutLat.get cut_bag_ref with
         | Top -> "T"
@@ -544,16 +544,31 @@ and string_of_ty = function
               let elements = Ast.SymSet.elements sym_set in
               String.concat "," (List.map (fun (s, _) -> s) elements)
       in
+      let rec string_of_prov = function
+        | SConst f -> Printf.sprintf "%g" f
+        | SSample id -> Printf.sprintf "u%d" id
+        | SAdd (a, b) ->
+            Printf.sprintf "(%s+%s)" (string_of_prov a) (string_of_prov b)
+        | SMul (a, b) ->
+            Printf.sprintf "(%s*%s)" (string_of_prov a) (string_of_prov b)
+        | SNeg a -> Printf.sprintf "(-%s)" (string_of_prov a)
+        | SDiv (a, b) ->
+            Printf.sprintf "(%s/%s)" (string_of_prov a) (string_of_prov b)
+      in
+      let prov_str =
+        match Ast.ProvLat.get prov_bag_ref with
+        | Top -> "T"
+        | Finite prov_set ->
+            Ast.ProvSet.elements prov_set
+            |> List.map string_of_prov
+            |> String.concat ","
+      in
       let content_str =
-        match bounds_str, consts_str, syms_str with
-        | "", "", "" -> ""
-        | b, "", "" -> Printf.sprintf "%s[%s]%s" type_color b reset_color
-        | "", c, "" -> Printf.sprintf "%s[; %s]%s" type_color c reset_color
-        | "", "", s -> Printf.sprintf "%s[;; %s]%s" type_color s reset_color
-        | b, c, ""  -> Printf.sprintf "%s[%s; %s]%s" type_color b c reset_color
-        | b, "", s  -> Printf.sprintf "%s[%s;; %s]%s" type_color b s reset_color
-        | "", c, s  -> Printf.sprintf "%s[; %s; %s]%s" type_color c s reset_color
-        | b, c, s   -> Printf.sprintf "%s[%s; %s; %s]%s" type_color b c s reset_color
+        if bounds_str = "" && consts_str = "" && syms_str = "" && prov_str = ""
+        then ""
+        else
+          Printf.sprintf "%s[%s; %s; %s; %s]%s"
+            type_color bounds_str consts_str syms_str prov_str reset_color
       in
       Printf.sprintf "%sfloat%s%s" type_color reset_color content_str
   | TPair (t1, t2) ->

@@ -26,10 +26,11 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
   | TFin n1, TFin n2 when n1 = n2 -> ()
   | TUnit, TUnit -> ()
   (* Structural Cases *)
-  | TFloat (b1, c1, s1), TFloat (b2, c2, s2) ->
+  | TFloat (b1, c1, s1, p1), TFloat (b2, c2, s2, p2) ->
       Ast.CutLat.eq b1 b2;     (* Cuts must agree *)
       Lats.FloatLat.leq c1 c2; (* Concrete constants flow sub -> super *)
-      Ast.SymLat.leq s1 s2     (* Symbolic values flow sub -> super *)
+      Ast.SymLat.leq s1 s2;    (* Symbolic values flow sub -> super *)
+      Ast.ProvLat.leq p1 p2
   | TPair(a1, b1), TPair(a2, b2) ->
       sub_type a1 a2;
       sub_type b1 b2
@@ -48,11 +49,12 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
     | TFun (_, _, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TFun (a_meta, Ast.fresh_effect (), b_meta)); sub_type t_sub t_super
-    | TFloat (_, _, _) ->
+    | TFloat (_, _, _, _) ->
       let b_bag = Ast.fresh_cut_bag () in
       let c_bag = Lats.fresh_float_bag () in
       let s_bag = Ast.fresh_sym_bag () in
-      Ast.assign r (TFloat (b_bag, c_bag, s_bag)); sub_type t_sub t_super
+      Ast.assign r (TFloat (b_bag, c_bag, s_bag, Ast.fresh_prov_bag ()));
+      sub_type t_sub t_super
     | TUnit -> Ast.assign r TUnit
     | TList _ -> let elem_meta = Ast.fresh_meta () in
                  Ast.assign r (TList elem_meta); sub_type t_sub t_super
@@ -68,11 +70,12 @@ let rec sub_type (t_sub : ty) (t_super : ty) : unit =
       Ast.assign r (TPair (a_meta, b_meta)); sub_type t_sub t_super
     | TFun (_, _, _) -> let a_meta = Ast.fresh_meta () in let b_meta = Ast.fresh_meta () in
       Ast.assign r (TFun (a_meta, Ast.fresh_effect (), b_meta)); sub_type t_sub t_super
-    | TFloat (_, _, _) ->
+    | TFloat (_, _, _, _) ->
       let b_bag = Ast.fresh_cut_bag () in
       let c_bag = Lats.fresh_float_bag () in
       let s_bag = Ast.fresh_sym_bag () in
-      Ast.assign r (TFloat (b_bag, c_bag, s_bag)); sub_type t_sub t_super
+      Ast.assign r (TFloat (b_bag, c_bag, s_bag, Ast.fresh_prov_bag ()));
+      sub_type t_sub t_super
     | TUnit -> Ast.assign r TUnit
     | TList _ -> let elem_meta = Ast.fresh_meta () in
                  Ast.assign r (TList elem_meta); sub_type t_sub t_super
@@ -99,11 +102,11 @@ and unify (t1 : ty) (t2 : ty) : unit =
 (* Construct a fresh TFloat for an arithmetic result whose value is
    represented by the symbolic expression [orig_expr] (the original
    surface-syntax form). *)
-let arith_result_ty (orig_expr : expr) : ty =
+let arith_result_ty (orig_expr : expr) (prov_bag : Ast.ProvLat.bag) : ty =
   let cuts_bag = Ast.fresh_cut_bag () in
   let floats_bag = Lats.fresh_float_bag () in (* empty: value is symbolic *)
   let sym_bag = singleton_sym_bag orig_expr in
-  TFloat (cuts_bag, floats_bag, sym_bag)
+  TFloat (cuts_bag, floats_bag, sym_bag, prov_bag)
 
 (* Add a single symbolic-expression cut to a cut bag (only if the
    bag is currently finite and the cut is not already present). *)
@@ -125,6 +128,7 @@ let sym_cut_val_of_expr (e : expr) : cut_val =
 
 (* Type inference and elaboration: expr -> texpr *)
 let infer_expr (e : expr) : texpr =
+  let next_sample_id = ref 0 in
   let mk ty eff ae = (ty, eff, TAExprNode ae) in
   let pure ty ae = mk ty Pure ae in
   let prob ty ae = mk ty Prob ae in
@@ -138,7 +142,8 @@ let infer_expr (e : expr) : texpr =
       let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
       let consts_bag_ref = Lats.FloatLat.create (Finite (FloatSet.singleton f)) in
       let sym_bag_ref = Ast.SymLat.create (Finite Ast.SymSet.empty) in
-      pure (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Const f)
+      let prov = Ast.ProvLat.create (Finite (Ast.ProvSet.singleton (SConst f))) in
+      pure (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref, prov)) (Const f)
     | BoolConst b ->
       pure TBool (BoolConst b)
     | Var x ->
@@ -151,7 +156,7 @@ let infer_expr (e : expr) : texpr =
         let cuts_bag = Ast.fresh_cut_bag () in
         let floats_bag = Lats.fresh_float_bag () in
         let sym_bag = singleton_sym_bag (ExprNode (Var x)) in
-        pure (TFloat (cuts_bag, floats_bag, sym_bag)) (Var x))
+        pure (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ())) (Var x))
 
     | Let (x, e1, e2) ->
       let t1, eff1, a1 = aux env e1 in
@@ -172,7 +177,7 @@ let infer_expr (e : expr) : texpr =
              let arg_cut = Ast.fresh_cut_bag () in
              let arg_float = Lats.fresh_float_bag () in
              let arg_sym = Ast.fresh_sym_bag () in
-             (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+             (try sub_type t (TFloat (arg_cut, arg_float, arg_sym, Ast.fresh_prov_bag ()))
               with Failure msg ->
                 failwith ("Type error in special function " ^ name ^ ": " ^ msg));
              (t, eff, a))
@@ -181,7 +186,7 @@ let infer_expr (e : expr) : texpr =
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ()))
         (join (List.map eff_of typed_args))
         (SpecialFunc (name, typed_args))
 
@@ -194,7 +199,7 @@ let infer_expr (e : expr) : texpr =
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
-        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym, Ast.fresh_prov_bag ()))
          with Failure msg -> failwith ("Type error in CDF " ^ arg_name ^ ": " ^ msg));
         (t, eff, a)
       in
@@ -217,7 +222,7 @@ let infer_expr (e : expr) : texpr =
         | Distr1 (_, te1) -> eff_of te1
         | Distr2 (_, te1, te2) -> join [eff_of te1; eff_of te2]
       in
-      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ()))
         (join [dist_eff; eff_of point_te])
         (Cdf (dist_exp', point_te))
 
@@ -227,7 +232,7 @@ let infer_expr (e : expr) : texpr =
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
-        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym, Ast.fresh_prov_bag ()))
          with Failure msg ->
            failwith ("Type error in CDF JVP " ^ arg_name ^ ": " ^ msg));
         (t, eff, a)
@@ -262,7 +267,7 @@ let infer_expr (e : expr) : texpr =
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ()))
         (join
            [ sample_eff dist_exp'
            ; join (List.map eff_of parameter_tangent_tes)
@@ -279,14 +284,15 @@ let infer_expr (e : expr) : texpr =
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
-        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym, Ast.fresh_prov_bag ()))
          with Failure msg ->
            failwith ("Type error in CDF VJP " ^ arg_name ^ ": " ^ msg));
         (t, eff, a)
       in
       let result_float () =
         TFloat
-          (Ast.fresh_cut_bag (), Lats.fresh_float_bag (), Ast.fresh_sym_bag ())
+          (Ast.fresh_cut_bag (), Lats.fresh_float_bag (), Ast.fresh_sym_bag (),
+           Ast.fresh_prov_bag ())
       in
       let dist_exp', dist_eff, result_ty =
         match dist_exp with
@@ -321,7 +327,7 @@ let infer_expr (e : expr) : texpr =
         let arg_cut = Ast.fresh_cut_bag () in
         let arg_float = Lats.fresh_float_bag () in
         let arg_sym = Ast.fresh_sym_bag () in
-        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym))
+        (try sub_type t (TFloat (arg_cut, arg_float, arg_sym, Ast.fresh_prov_bag ()))
          with Failure msg -> failwith ("Type error in CDF expression " ^ arg_name ^ ": " ^ msg));
         (t, eff, a)
       in
@@ -330,7 +336,7 @@ let infer_expr (e : expr) : texpr =
       let cuts_bag = Ast.fresh_cut_bag () in
       let floats_bag = Lats.fresh_float_bag () in
       let sym_bag = singleton_sym_bag orig_expr in
-      mk (TFloat (cuts_bag, floats_bag, sym_bag))
+      mk (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ()))
         (join [eff_of kernel_te; eff_of point_te])
         (CdfExpr (kernel_te, point_te))
 
@@ -338,6 +344,11 @@ let infer_expr (e : expr) : texpr =
       let cuts_bag_ref = Ast.CutLat.create (Finite Ast.CutSet.empty) in
       let consts_bag_ref = Lats.FloatLat.create Top in
       let sym_bag_ref = Ast.SymLat.create (Finite Ast.SymSet.empty) in
+      let sample_id = !next_sample_id in
+      incr next_sample_id;
+      let prov_bag_ref =
+        Ast.ProvLat.create (Finite (Ast.ProvSet.singleton (SSample sample_id)))
+      in
 
       let add_floats_to_cutbag (float_bag : FloatLat.bag) (cut_bag : Ast.CutLat.bag) =
         let listener () =
@@ -375,7 +386,8 @@ let infer_expr (e : expr) : texpr =
           let t_arg_cut_bag = Ast.fresh_cut_bag () in
           let t_arg_float_bag = Lats.fresh_float_bag () in
           let t_arg_sym_bag = Ast.fresh_sym_bag () in
-          (try unify t_arg (Ast.TFloat (t_arg_cut_bag, t_arg_float_bag, t_arg_sym_bag))
+          (try unify t_arg (Ast.TFloat (t_arg_cut_bag, t_arg_float_bag, t_arg_sym_bag,
+                                        Ast.fresh_prov_bag ()))
            with Failure msg ->
             let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr1 (dist_kind, arg_e)))) in
             failwith (Printf.sprintf "Type error in Sample (%s) argument: %s" kind_str msg));
@@ -385,7 +397,7 @@ let infer_expr (e : expr) : texpr =
           make_input_top_if_output_boundbag_is_top t_arg_cut_bag cuts_bag_ref;
 
           let dist_exp' = Distr1 (dist_kind, (t_arg, eff_arg, a_arg)) in
-          prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Sample dist_exp')
+          prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref, prov_bag_ref)) (Sample dist_exp')
 
       | Distr2 (dist_kind, arg1_e, arg2_e) ->
         let t1, eff1, a1 = aux env arg1_e in
@@ -397,11 +409,13 @@ let infer_expr (e : expr) : texpr =
         let t2_float_bag = Lats.fresh_float_bag () in
         let t2_sym_bag = Ast.fresh_sym_bag () in
 
-        (try unify t1 (Ast.TFloat (t1_cut_bag, t1_float_bag, t1_sym_bag))
+        (try unify t1 (Ast.TFloat (t1_cut_bag, t1_float_bag, t1_sym_bag,
+                                   Ast.fresh_prov_bag ()))
          with Failure msg ->
           let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr2 (dist_kind, arg1_e, arg2_e)))) in
           failwith (Printf.sprintf "Type error in Sample (%s) first argument: %s" kind_str msg));
-        (try unify t2 (Ast.TFloat (t2_cut_bag, t2_float_bag, t2_sym_bag))
+        (try unify t2 (Ast.TFloat (t2_cut_bag, t2_float_bag, t2_sym_bag,
+                                   Ast.fresh_prov_bag ()))
          with Failure msg ->
           let kind_str = Pretty.string_of_expr_indented (ExprNode (Sample (Distr2 (dist_kind, arg1_e, arg2_e)))) in
           failwith (Printf.sprintf "Type error in Sample (%s) second argument: %s" kind_str msg));
@@ -416,7 +430,7 @@ let infer_expr (e : expr) : texpr =
         make_input_top_if_output_boundbag_is_top t2_cut_bag cuts_bag_ref;
 
         let dist_exp' = Distr2 (dist_kind, (t1, eff1, a1), (t2, eff2, a2)) in
-        prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref)) (Sample dist_exp')
+        prob (TFloat (cuts_bag_ref, consts_bag_ref, sym_bag_ref, prov_bag_ref)) (Sample dist_exp')
       )
 
     | DiscreteCase cases ->
@@ -435,7 +449,7 @@ let infer_expr (e : expr) : texpr =
         let pf_cuts = Ast.fresh_cut_bag () in
         let pf_floats = Lats.fresh_float_bag () in
         let pf_sym = Ast.fresh_sym_bag () in
-        (try sub_type tp (TFloat (pf_cuts, pf_floats, pf_sym))
+        (try sub_type tp (TFloat (pf_cuts, pf_floats, pf_sym, Ast.fresh_prov_bag ()))
          with Failure msg -> failwith ("Type error in DiscreteCase probability: " ^ msg));
         ((tb, effb, ab), (tp, effp, ap))
       ) cases in
@@ -449,9 +463,9 @@ let infer_expr (e : expr) : texpr =
         let c_meta2 = Lats.fresh_float_bag () in
         let s_meta1 = Ast.fresh_sym_bag () in
         let s_meta2 = Ast.fresh_sym_bag () in
-        (try unify t1 (Ast.TFloat (b_meta, c_meta1, s_meta1))
+        (try unify t1 (Ast.TFloat (b_meta, c_meta1, s_meta1, Ast.fresh_prov_bag ()))
          with Failure msg -> failwith (Printf.sprintf "Type error in comparison left operand: %s" msg));
-        (try unify t2 (Ast.TFloat (b_meta, c_meta2, s_meta2))
+        (try unify t2 (Ast.TFloat (b_meta, c_meta2, s_meta2, Ast.fresh_prov_bag ()))
          with Failure msg -> failwith (Printf.sprintf "Type error in comparison right operand: %s" msg));
 
         (* Listener: when either side's float bag or sym bag
@@ -756,7 +770,7 @@ let infer_expr (e : expr) : texpr =
   (* Inference for an arithmetic operation; the result's type is a
      fresh symbolic float whose sym-bag identifies the whole
      [orig_expr]. *)
-  and arith_aux env orig_expr e1 e2 _op_name rebuild =
+  and arith_aux env orig_expr e1 e2 op_name rebuild =
     let t1, eff1, a1 = aux env e1 in
     let t2, eff2, a2 = aux env e2 in
     (* Both operands must be floats. *)
@@ -766,11 +780,42 @@ let infer_expr (e : expr) : texpr =
     let dummy_cut2 = Ast.fresh_cut_bag () in
     let dummy_float2 = Lats.fresh_float_bag () in
     let dummy_sym2 = Ast.fresh_sym_bag () in
-    (try sub_type t1 (TFloat (dummy_cut1, dummy_float1, dummy_sym1))
+    (try sub_type t1 (TFloat (dummy_cut1, dummy_float1, dummy_sym1,
+                              Ast.fresh_prov_bag ()))
      with Failure msg -> failwith ("Type error in arithmetic left operand: " ^ msg));
-    (try sub_type t2 (TFloat (dummy_cut2, dummy_float2, dummy_sym2))
+    (try sub_type t2 (TFloat (dummy_cut2, dummy_float2, dummy_sym2,
+                              Ast.fresh_prov_bag ()))
      with Failure msg -> failwith ("Type error in arithmetic right operand: " ^ msg));
-    let result_ty = arith_result_ty orig_expr in
+    let provenance_of = function
+      | TFloat (_, _, _, p) -> Ast.ProvLat.get p
+      | _ -> Finite Ast.ProvSet.empty
+    in
+    let canonical_commutative ctor a b =
+      if Ast.compare_sym_expr a b <= 0 then ctor (a, b) else ctor (b, a)
+    in
+    let combine a b =
+      match op_name with
+      | "Add" -> canonical_commutative (fun (x, y) -> SAdd (x, y)) a b
+      | "Sub" -> SAdd (a, SNeg b)
+      | "Mul" -> canonical_commutative (fun (x, y) -> SMul (x, y)) a b
+      | "Div" -> SDiv (a, b)
+      | _ -> failwith "unknown arithmetic operator"
+    in
+    let prov_bag =
+      match provenance_of (Ast.force t1), provenance_of (Ast.force t2) with
+      | Finite p1, Finite p2 ->
+          let result =
+            Ast.ProvSet.fold
+              (fun a acc ->
+                 Ast.ProvSet.fold
+                   (fun b acc -> Ast.ProvSet.add (combine a b) acc)
+                   p2 acc)
+              p1 Ast.ProvSet.empty
+          in
+          Ast.ProvLat.create (Finite result)
+      | Top, _ | _, Top -> Ast.ProvLat.create Top
+    in
+    let result_ty = arith_result_ty orig_expr prov_bag in
     mk result_ty (join [eff1; eff2])
       (rebuild (t1, eff1, a1) (t2, eff2, a2))
 

@@ -212,6 +212,51 @@ module SymLat = Make(SymSetContents)
 let fresh_sym_bag () : SymLat.bag =
   SymLat.create (Finite SymSet.empty)
 
+(* Symbolic provenance for primitive continuous samples.  Unlike [SymLat],
+   which records source expressions used by the legacy cut analysis, this IR
+   preserves sampling-site identity through arithmetic. *)
+type sample_id = int
+
+type sym_expr =
+  | SConst of float
+  | SSample of sample_id
+  | SAdd of sym_expr * sym_expr
+  | SMul of sym_expr * sym_expr
+  | SNeg of sym_expr
+  | SDiv of sym_expr * sym_expr
+
+let rec compare_sym_expr a b =
+  match a, b with
+  | SConst x, SConst y -> compare x y
+  | SSample x, SSample y -> compare x y
+  | SAdd (a1, a2), SAdd (b1, b2)
+  | SMul (a1, a2), SMul (b1, b2)
+  | SDiv (a1, a2), SDiv (b1, b2) ->
+      let c = compare_sym_expr a1 b1 in
+      if c = 0 then compare_sym_expr a2 b2 else c
+  | SNeg a, SNeg b -> compare_sym_expr a b
+  | SConst _, _ -> -1 | _, SConst _ -> 1
+  | SSample _, _ -> -1 | _, SSample _ -> 1
+  | SNeg _, _ -> -1 | _, SNeg _ -> 1
+  | SAdd _, _ -> -1 | _, SAdd _ -> 1
+  | SMul _, _ -> -1 | _, SMul _ -> 1
+
+module ProvSet = Set.Make(struct type t = sym_expr let compare = compare_sym_expr end)
+
+module ProvSetContents : Lat with type t = (sym_expr, ProvSet.t) set_or_top = struct
+  type t = (sym_expr, ProvSet.t) set_or_top
+  let union a b = match a, b with
+    | Top, _ | _, Top -> Top
+    | Finite x, Finite y -> Finite (ProvSet.union x y)
+  let equal a b = match a, b with
+    | Top, Top -> true
+    | Finite x, Finite y -> ProvSet.equal x y
+    | _ -> false
+end
+
+module ProvLat = Make(ProvSetContents)
+let fresh_prov_bag () = ProvLat.create (Finite ProvSet.empty)
+
 (* ================================================================ *)
 (* Types                                                              *)
 (* ================================================================ *)
@@ -231,10 +276,11 @@ type meta =
 and meta_ref = meta ref
 and ty =
   | TBool
-  | TFloat of CutLat.bag * FloatLat.bag * SymLat.bag
+  | TFloat of CutLat.bag * FloatLat.bag * SymLat.bag * ProvLat.bag
       (* cut bag (cuts applied to this expression),
          float bag (concrete constants this expression may take),
-         sym bag (symbolic expressions this expression may take). *)
+         sym bag (legacy symbolic values),
+         provenance bag (sample-identity-preserving arithmetic). *)
   | TPair of ty * ty
   | TFun of ty * effect * ty
   | TFin of int
@@ -325,7 +371,7 @@ let assign (m : meta_ref) (t : ty) : unit =
 (* Function to recursively set all bound bags in float types to top *)
 let rec set_cut_bags_to_top (t : ty) : unit =
   match force t with
-  | TFloat (cut_bag, _float_bag, _sym_bag) ->
+  | TFloat (cut_bag, _float_bag, _sym_bag, _prov_bag) ->
       CutLat.leq (CutLat.create Top) cut_bag
   | TPair (t1, t2) ->
       set_cut_bags_to_top t1;
