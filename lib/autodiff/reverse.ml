@@ -883,25 +883,24 @@ and runtime_eval_cps env (ExprNode e) k =
       let dist = runtime_eval_dist env dist in
       runtime_eval_cps env point (fun v_point ->
         k (RFloat (Distributions.cdistr_cdf dist (runtime_as_float v_point))))
-  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+  | CdfJvp (dist, parameter_tangents, point, point_tangent) ->
       runtime_eval_cps env point (fun point_value ->
         runtime_eval_cps env point_tangent (fun point_tangent_value ->
           let point = runtime_as_float point_value in
           let point_tangent = runtime_as_float point_tangent_value in
           try
-            match dist, tangent_dist with
-            | Distr1 (kind, arg), Distr1 (tangent_kind, darg)
-              when kind = tangent_kind ->
-                runtime_eval_cps env arg (fun arg_value ->
-                  runtime_eval_cps env darg (fun darg_value ->
-                    k
-                      (RFloat
-                         (Cdf_callback.jvp_single kind
-                            (runtime_as_float arg_value)
-                            (runtime_as_float darg_value)
-                            point point_tangent))))
-            | Distr2 (kind, arg1, arg2), Distr2 (tangent_kind, darg1, darg2)
-              when kind = tangent_kind ->
+            match dist, parameter_tangents with
+            | Distr1 (kind, arg), [darg] ->
+                runtime_eval_args env [arg; darg] (function
+                  | [arg; darg] ->
+                      k
+                        (RFloat
+                           (Cdf_callback.jvp_single kind
+                              (runtime_as_float arg)
+                              (runtime_as_float darg)
+                              point point_tangent))
+                  | _ -> assert false)
+            | Distr2 (kind, arg1, arg2), [darg1; darg2] ->
                 runtime_eval_args env [arg1; arg2; darg1; darg2] (function
                   | [arg1; arg2; darg1; darg2] ->
                       k
@@ -913,7 +912,7 @@ and runtime_eval_cps env (ExprNode e) k =
                               (runtime_as_float darg2)
                               point point_tangent))
                   | _ -> assert false)
-            | _ -> runtime_error "CDF JVP distribution kind mismatch"
+            | _ -> runtime_error "CDF JVP parameter tangent arity mismatch"
           with Cdf_callback.Unsupported msg -> runtime_error ("CDF JVP: " ^ msg)))
   | CdfVjp
       (dist, parameter_active, point, point_active, output_adjoint) ->

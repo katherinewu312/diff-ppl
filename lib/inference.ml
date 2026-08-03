@@ -183,7 +183,7 @@ let infer (e : expr) : typed_expr =
         mk (fresh_float_ty ())
           (join [dist_eff; eff_of typed_point])
           (Cdf (typed_dist, typed_point))
-    | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+    | CdfJvp (dist, parameter_tangents, point, point_tangent) ->
         let infer_arg arg name =
           let ((ty, _, _) as typed) = aux env arg in
           expect_float ty
@@ -200,7 +200,16 @@ let infer (e : expr) : typed_expr =
                 , infer_arg e2 (label ^ " second argument") )
         in
         let typed_dist = infer_sample "distribution" dist in
-        let typed_tangent_dist = infer_sample "distribution tangent" tangent_dist in
+        let typed_parameter_tangents =
+          List.map (fun tangent -> infer_arg tangent "parameter tangent")
+            parameter_tangents
+        in
+        let expected_tangent_arity =
+          match dist with Distr1 _ -> 1 | Distr2 _ -> 2
+        in
+        if List.length parameter_tangents <> expected_tangent_arity then
+          failwith
+            "CDF JVP parameter tangent arity does not match distribution arity";
         let typed_point = infer_arg point "point argument" in
         let typed_point_tangent = infer_arg point_tangent "point tangent" in
         let sample_effect = function
@@ -210,12 +219,15 @@ let infer (e : expr) : typed_expr =
         mk (fresh_float_ty ())
           (join
              [ sample_effect typed_dist
-             ; sample_effect typed_tangent_dist
+             ; join (List.map eff_of typed_parameter_tangents)
              ; eff_of typed_point
              ; eff_of typed_point_tangent
              ])
           (CdfJvp
-             (typed_dist, typed_tangent_dist, typed_point, typed_point_tangent))
+             ( typed_dist
+             , typed_parameter_tangents
+             , typed_point
+             , typed_point_tangent ))
     | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->
         let infer_arg arg name =
           let ((ty, _, _) as typed) = aux env arg in
@@ -630,11 +642,11 @@ let rec erase ((_, _, TAExprNode node) : typed_expr) : expr =
   | Div (e1, e2) -> expr (Div (erase e1, erase e2))
   | SpecialFunc (name, args) -> expr (SpecialFunc (name, List.map erase args))
   | Cdf (dist, point) -> expr (Cdf (erase_sample dist, erase point))
-  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+  | CdfJvp (dist, parameter_tangents, point, point_tangent) ->
       expr
         (CdfJvp
            ( erase_sample dist
-           , erase_sample tangent_dist
+           , List.map erase parameter_tangents
            , erase point
            , erase point_tangent ))
   | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->

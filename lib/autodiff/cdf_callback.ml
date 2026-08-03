@@ -71,111 +71,127 @@ let parameter_count = function
   | Distributions.Poisson _ ->
       1
 
-let all_zero xs =
-  List.for_all (( = ) 0.0) xs
+let unavailable_parameter label =
+  unsupported
+    ("no exact CDF parameter derivative callback is implemented for " ^ label)
 
-let unsupported_direction label tangents =
-  if all_zero tangents then 0.0
+(* This is the single registry of exact coordinate partials used by both AD
+   directions.  Each entry is a closed-form derivative; this module never
+   falls back to integration, quadrature, finite differences, or lookup
+   tables. *)
+let parameter_partial dist parameter_index point =
+  if point = neg_infinity || point = infinity then 0.0
   else
-    unsupported
-      ("no exact CDF parameter derivative callback is implemented for " ^ label)
-
-let scale_parameter_jvp dist scale point dscale =
-  if dscale = 0.0 || point = neg_infinity || point = infinity then 0.0
-  else (-.point /. scale) *. cdistr_pdf dist point *. dscale
-
-let uniform_parameter_jvp lo hi point dlo dhi =
-  if lo = hi then
-    unsupported "the uniform CDF callback is not differentiable for a zero-width interval"
-  else if point = lo && dlo <> 0.0 then
-    unsupported
-      "the uniform CDF is not differentiable in its lower endpoint at the support boundary"
-  else if point = hi && dhi <> 0.0 then
-    unsupported
-      "the uniform CDF is not differentiable in its upper endpoint at the support boundary"
-  else if point <= lo || point >= hi then 0.0
-  else
-    let width = hi -. lo in
-    (((point -. hi) /. (width *. width)) *. dlo)
-    -. (((point -. lo) /. (width *. width)) *. dhi)
-
-let pareto_parameter_jvp a b point da db =
-  if point = b && db <> 0.0 then
-    unsupported
-      "the Pareto CDF is not differentiable in its scale at the support boundary"
-  else if point <= b then 0.0
-  else
-    let survival = (b /. point) ** a in
-    (survival *. log (point /. b) *. da)
-    -. ((a *. survival /. b) *. db)
-
-let parameter_jvp dist direction point =
-  if all_zero direction || point = neg_infinity || point = infinity then 0.0
-  else
-    match dist, direction with
-    | Distributions.Uniform (lo, hi), [dlo; dhi] ->
-        (* Leibniz with the moving support endpoints included explicitly. *)
-        uniform_parameter_jvp lo hi point dlo dhi
-    | Distributions.Pareto (a, b), [da; db] ->
-        (* The scale [b] moves the support boundary, so its exact Leibniz
-           boundary contribution is part of this closed-form rule. *)
-        pareto_parameter_jvp a b point da db
-    | Distributions.Gaussian (mean, std), [dmean; dstd] ->
-        let pdf = cdistr_pdf dist point in
-        (-.pdf *. dmean)
-        -. (((point -. mean) /. std) *. pdf *. dstd)
-    | Distributions.Exponential rate, [drate] ->
-        if point <= 0.0 then 0.0
-        else point *. exp (-.rate *. point) *. drate
-    | Distributions.Beta _, [dalpha; dbeta] ->
-        unsupported_direction "beta shape parameters" [dalpha; dbeta]
-    | Distributions.LogNormal (mu, sigma), [dmu; dsigma] ->
+    match dist, parameter_index with
+    | Distributions.Uniform (lo, hi), index ->
+        if lo = hi then
+          unsupported
+            "the uniform CDF callback is not differentiable for a zero-width interval"
+        else if index = 0 && point = lo then
+          unsupported
+            "the uniform CDF is not differentiable in its lower endpoint at the support boundary"
+        else if index = 1 && point = hi then
+          unsupported
+            "the uniform CDF is not differentiable in its upper endpoint at the support boundary"
+        else if point <= lo || point >= hi then 0.0
+        else
+          let width_squared = (hi -. lo) ** 2.0 in
+          if index = 0 then (point -. hi) /. width_squared
+          else if index = 1 then -.((point -. lo) /. width_squared)
+          else invalid_arg "CDF parameter index is outside distribution arity"
+    | Distributions.Gaussian _, 0 ->
+        -.cdistr_pdf dist point
+    | Distributions.Gaussian (mean, std), 1 ->
+        -.((point -. mean) /. std) *. cdistr_pdf dist point
+    | Distributions.Exponential rate, 0 ->
+        if point <= 0.0 then 0.0 else point *. exp (-.rate *. point)
+    | Distributions.Beta _, 0 ->
+        unavailable_parameter "beta shape parameters"
+    | Distributions.Beta _, 1 ->
+        unavailable_parameter "beta shape parameters"
+    | Distributions.LogNormal (mu, sigma), index ->
         if point <= 0.0 then 0.0
         else
           let z = (log point -. mu) /. sigma in
           let phi =
             exp (-0.5 *. z *. z) /. sqrt (2.0 *. 4.0 *. atan 1.0)
           in
-          (-.phi /. sigma *. dmu)
-          -. (z *. phi /. sigma *. dsigma)
-    | Distributions.Gamma (_, scale), [dshape; dscale] ->
-        unsupported_direction "gamma shape" [dshape]
-        +. scale_parameter_jvp dist scale point dscale
-    | Distributions.Laplace scale, [dscale]
-    | Distributions.Cauchy scale, [dscale]
-    | Distributions.Logistic scale, [dscale]
-    | Distributions.Rayleigh scale, [dscale] ->
-        scale_parameter_jvp dist scale point dscale
-    | Distributions.Weibull (scale, shape), [dscale; dshape] ->
-        let scale_term = scale_parameter_jvp dist scale point dscale in
-        if dshape = 0.0 || point <= 0.0 then scale_term
+          if index = 0 then -.phi /. sigma
+          else if index = 1 then -.z *. phi /. sigma
+          else invalid_arg "CDF parameter index is outside distribution arity"
+    | Distributions.Gamma _, 0 ->
+        unavailable_parameter "gamma shape"
+    | Distributions.Gamma (_, scale), 1 ->
+        (-.point /. scale) *. cdistr_pdf dist point
+    | Distributions.Laplace scale, 0
+    | Distributions.Cauchy scale, 0
+    | Distributions.Logistic scale, 0
+    | Distributions.Rayleigh scale, 0 ->
+        (-.point /. scale) *. cdistr_pdf dist point
+    | Distributions.Pareto (a, b), 0 ->
+        if point <= b then 0.0
+        else
+          let survival = (b /. point) ** a in
+          survival *. log (point /. b)
+    | Distributions.Pareto (a, b), 1 ->
+        if point = b then
+          unsupported
+            "the Pareto CDF is not differentiable in its scale at the support boundary"
+        else if point < b then 0.0
+        else
+          let survival = (b /. point) ** a in
+          -.a *. survival /. b
+    | Distributions.Weibull (scale, _), 0 ->
+        (-.point /. scale) *. cdistr_pdf dist point
+    | Distributions.Weibull (scale, shape), 1 ->
+        if point <= 0.0 then 0.0
         else
           let ratio = point /. scale in
           let u = ratio ** shape in
-          scale_term +. (exp (-.u) *. u *. log ratio *. dshape)
-    | Distributions.TDist _, [dnu] ->
-        unsupported_direction "Student-t degrees of freedom" [dnu]
-    | Distributions.Chi2 _, [dnu] ->
-        unsupported_direction "chi-square degrees of freedom" [dnu]
-    | Distributions.Gumbel1 (a, b), [da; db] ->
+          exp (-.u) *. u *. log ratio
+    | Distributions.TDist _, 0 ->
+        unavailable_parameter "Student-t degrees of freedom"
+    | Distributions.Chi2 _, 0 ->
+        unavailable_parameter "chi-square degrees of freedom"
+    | Distributions.Gumbel1 (a, b), 0 ->
         let exp_minus_ax = exp (-.a *. point) in
         let cdf = exp (-.b *. exp_minus_ax) in
-        (cdf *. b *. point *. exp_minus_ax *. da)
-        -. (cdf *. exp_minus_ax *. db)
-    | Distributions.Gumbel2 (a, b), [da; db] ->
+        cdf *. b *. point *. exp_minus_ax
+    | Distributions.Gumbel1 (a, b), 1 ->
+        let exp_minus_ax = exp (-.a *. point) in
+        let cdf = exp (-.b *. exp_minus_ax) in
+        -.cdf *. exp_minus_ax
+    | Distributions.Gumbel2 (a, b), 0 ->
         if point <= 0.0 then 0.0
         else
           let x_minus_a = point ** (-.a) in
           let cdf = exp (-.b *. x_minus_a) in
-          (cdf *. b *. x_minus_a *. log point *. da)
-          -. (cdf *. x_minus_a *. db)
-    | Distributions.Exppow (scale, _), [dscale; dshape] ->
-        unsupported_direction "exponential-power shape" [dshape]
-        +. scale_parameter_jvp dist scale point dscale
+          cdf *. b *. x_minus_a *. log point
+    | Distributions.Gumbel2 (a, b), 1 ->
+        if point <= 0.0 then 0.0
+        else
+          let x_minus_a = point ** (-.a) in
+          let cdf = exp (-.b *. x_minus_a) in
+          -.cdf *. x_minus_a
+    | Distributions.Exppow (scale, _), 0 ->
+        (-.point /. scale) *. cdistr_pdf dist point
+    | Distributions.Exppow _, 1 ->
+        unavailable_parameter "exponential-power shape"
     | (Distributions.Poisson _ | Distributions.Binomial _), _ ->
         unsupported
           "exact continuous CDF derivative callbacks do not apply to Poisson or Binomial atoms"
-    | _ -> invalid_arg "CDF tangent arity does not match distribution arity"
+    | _ -> invalid_arg "CDF parameter index is outside distribution arity"
+
+let parameter_jvp dist direction point =
+  let arity = parameter_count dist in
+  if List.length direction <> arity then
+    invalid_arg "CDF tangent arity does not match distribution arity";
+  List.mapi
+    (fun parameter_index tangent ->
+      if tangent = 0.0 then 0.0
+      else tangent *. parameter_partial dist parameter_index point)
+    direction
+  |> List.fold_left ( +. ) 0.0
 
 let jvp dist parameter_tangents point point_tangent =
   let moving_cut =
@@ -183,9 +199,6 @@ let jvp dist parameter_tangents point point_tangent =
     else cdistr_pdf dist point *. point_tangent
   in
   moving_cut +. parameter_jvp dist parameter_tangents point
-
-let basis size i =
-  List.init size (fun j -> if i = j then 1.0 else 0.0)
 
 let vjp dist parameter_active point point_active output_adjoint =
   let arity = parameter_count dist in
@@ -196,7 +209,7 @@ let vjp dist parameter_active point point_active output_adjoint =
     let parameter_adjoints =
       List.init arity (fun i ->
         if List.nth parameter_active i then
-          output_adjoint *. parameter_jvp dist (basis arity i) point
+          output_adjoint *. parameter_partial dist i point
         else 0.0)
     in
     let point_adjoint =

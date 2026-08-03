@@ -65,10 +65,10 @@ let free_float_vars te =
           ]
     | Ast.Sample dist -> sample bound dist
     | Ast.Cdf (dist, point) -> StringSet.union (sample bound dist) (expr bound point)
-    | Ast.CdfJvp (dist, tangent_dist, point, point_tangent) ->
+    | Ast.CdfJvp (dist, parameter_tangents, point, point_tangent) ->
         union_many
           [ sample bound dist
-          ; sample bound tangent_dist
+          ; union_many (List.map (expr bound) parameter_tangents)
           ; expr bound point
           ; expr bound point_tangent
           ]

@@ -332,9 +332,9 @@ let rec contains_sample (ExprNode e) =
         cases
   | SpecialFunc (_, args) -> List.exists contains_sample args
   | Cdf (d, e1) -> contains_sample_sample d || contains_sample e1
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       contains_sample_sample d
-      || contains_sample_sample dd
+      || List.exists contains_sample parameter_tangents
       || contains_sample e1
       || contains_sample de1
   | CdfVjp (d, _, e1, _, bar) ->

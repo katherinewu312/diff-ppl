@@ -147,11 +147,11 @@ and det env (_ty, eff, TAExprNode ae) =
   | Seq (e1, e2) -> node (Seq (det env e1, det env e2))
   | Unit -> unit_
   | Cdf (dist, point) -> cdf_primal (det_sample env dist) (det env point)
-  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+  | CdfJvp (dist, parameter_tangents, point, point_tangent) ->
       node
         (CdfJvp
            ( det_sample env dist
-           , det_sample env tangent_dist
+           , List.map (det env) parameter_tangents
            , det env point
            , det env point_tangent ))
   | CdfVjp (dist, parameter_active, point, point_active, output_adjoint) ->

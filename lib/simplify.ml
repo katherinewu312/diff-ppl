@@ -161,26 +161,25 @@ let mk_cdf dist point =
       mk_const (Distributions.cdistr_cdf dist point)
   | _ -> node (Cdf (dist, point))
 
-let mk_cdf_jvp dist tangent_dist point point_tangent =
+let mk_cdf_jvp dist parameter_tangents point point_tangent =
   match
     concrete_sample_arguments dist,
-    concrete_sample_arguments tangent_dist,
+    List.map const_value parameter_tangents,
     const_value point,
     const_value point_tangent
   with
-  | Some (`Single kind, [arg]), Some (`Single tangent_kind, [darg]),
-    Some point, Some dpoint when kind = tangent_kind ->
+  | Some (`Single kind, [arg]), [Some darg], Some point, Some dpoint ->
       (try mk_const (Cdf_callback.jvp_single kind arg darg point dpoint)
        with Cdf_callback.Unsupported _ ->
-         node (CdfJvp (dist, tangent_dist, mk_const point, mk_const dpoint)))
-  | Some (`Two kind, [arg1; arg2]), Some (`Two tangent_kind, [darg1; darg2]),
-    Some point, Some dpoint when kind = tangent_kind ->
+         node (CdfJvp (dist, parameter_tangents, mk_const point, mk_const dpoint)))
+  | Some (`Two kind, [arg1; arg2]), [Some darg1; Some darg2],
+    Some point, Some dpoint ->
       (try
          mk_const
            (Cdf_callback.jvp_two kind arg1 arg2 darg1 darg2 point dpoint)
        with Cdf_callback.Unsupported _ ->
-         node (CdfJvp (dist, tangent_dist, mk_const point, mk_const dpoint)))
-  | _ -> node (CdfJvp (dist, tangent_dist, point, point_tangent))
+         node (CdfJvp (dist, parameter_tangents, mk_const point, mk_const dpoint)))
+  | _ -> node (CdfJvp (dist, parameter_tangents, point, point_tangent))
 
 let mk_cdf_vjp dist parameter_active point point_active output_adjoint =
   match concrete_sample_arguments dist, const_value point, const_value output_adjoint with
@@ -272,8 +271,10 @@ let rec vars (ExprNode e) =
       StringSet.add y (StringSet.add ys (union_many [vars e1; vars e_nil; vars e_cons]))
   | SpecialFunc (_, args) -> union_many (List.map vars args)
   | Cdf (d, e1) -> StringSet.union (vars_sample d) (vars e1)
-  | CdfJvp (d, dd, e1, de1) ->
-      union_many [vars_sample d; vars_sample dd; vars e1; vars de1]
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
+      union_many
+        (vars_sample d :: vars e1 :: vars de1
+         :: List.map vars parameter_tangents)
   | CdfVjp (d, _, e1, _, bar) ->
       union_many [vars_sample d; vars e1; vars bar]
 
@@ -318,8 +319,10 @@ let rec free_vars (ExprNode e) =
         ; remove_many_set [y; ys] (free_vars e_cons) ]
   | SpecialFunc (_, args) -> union_many (List.map free_vars args)
   | Cdf (d, e1) -> StringSet.union (free_vars_sample d) (free_vars e1)
-  | CdfJvp (d, dd, e1, de1) ->
-      union_many [free_vars_sample d; free_vars_sample dd; free_vars e1; free_vars de1]
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
+      union_many
+        (free_vars_sample d :: free_vars e1 :: free_vars de1
+         :: List.map free_vars parameter_tangents)
   | CdfVjp (d, _, e1, _, bar) ->
       union_many [free_vars_sample d; free_vars e1; free_vars bar]
 
@@ -514,11 +517,13 @@ and subst_var_with name replacement replacement_fv (ExprNode e) =
         (Cdf
            ( subst_sample name replacement replacement_fv d
            , subst_var_with name replacement replacement_fv e1 ))
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       node
         (CdfJvp
            ( subst_sample name replacement replacement_fv d
-           , subst_sample name replacement replacement_fv dd
+           , List.map
+               (subst_var_with name replacement replacement_fv)
+               parameter_tangents
            , subst_var_with name replacement replacement_fv e1
            , subst_var_with name replacement replacement_fv de1 ))
   | CdfVjp (d, active, e1, point_active, bar) ->
@@ -703,10 +708,10 @@ and expr_env env (ExprNode e) =
   | Div (e1, e2) -> mk_div (expr_env env e1) (expr_env env e2)
   | SpecialFunc (name, args) -> mk_special name (List.map (expr_env env) args)
   | Cdf (d, e1) -> mk_cdf (sample_env env d) (expr_env env e1)
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       mk_cdf_jvp
         (sample_env env d)
-        (sample_env env dd)
+        (List.map (expr_env env) parameter_tangents)
         (expr_env env e1)
         (expr_env env de1)
   | CdfVjp (d, active, e1, point_active, bar) ->
@@ -923,8 +928,9 @@ let algebraic e =
          | ExprNode (SpecialFunc (name, args)) ->
              mk_special name (List.map go args)
          | ExprNode (Cdf (d, e1)) -> mk_cdf (go_sample d) (go e1)
-         | ExprNode (CdfJvp (d, dd, e1, de1)) ->
-             mk_cdf_jvp (go_sample d) (go_sample dd) (go e1) (go de1)
+         | ExprNode (CdfJvp (d, parameter_tangents, e1, de1)) ->
+             mk_cdf_jvp
+               (go_sample d) (List.map go parameter_tangents) (go e1) (go de1)
          | ExprNode (CdfVjp (d, active, e1, point_active, bar)) ->
              mk_cdf_vjp (go_sample d) active (go e1) point_active (go bar)
          | ExprNode (CdfExpr (k, e1)) -> node (CdfExpr (go k, go e1))
@@ -1233,14 +1239,20 @@ and symbolic_eval_cps environment (ExprNode expression) continuation =
              (mk_cdf
                 (symbolic_sample environment distribution)
                 (symbolic_expr point_value))))
-  | CdfJvp (distribution, tangent_distribution, point, point_tangent) ->
+  | CdfJvp (distribution, parameter_tangents, point, point_tangent) ->
       symbolic_eval_cps environment point (fun point_value ->
         symbolic_eval_cps environment point_tangent (fun point_tangent_value ->
+          let parameter_tangent_values =
+            List.map
+              (fun tangent ->
+                 symbolic_eval_cps environment tangent (fun value -> value))
+              parameter_tangents
+          in
           continuation
             (SExpr
                (mk_cdf_jvp
                   (symbolic_sample environment distribution)
-                  (symbolic_sample environment tangent_distribution)
+                  (List.map symbolic_expr parameter_tangent_values)
                   (symbolic_expr point_value)
                   (symbolic_expr point_tangent_value)))))
   | CdfVjp

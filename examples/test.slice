@@ -1,1 +1,1 @@
-if uniform(0,1) < theta then 1 else if gaussian(0,1) < theta then 2 else alpha
+if uniform(0,1) < theta then 2 else alpha

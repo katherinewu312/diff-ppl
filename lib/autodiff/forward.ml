@@ -125,9 +125,9 @@ let rec texpr_contains_sample (_, _, TAExprNode ae) =
       texpr_contains_sample e1 || texpr_contains_sample e2
   | Cdf (dist, point) ->
       sample_contains_sample dist || texpr_contains_sample point
-  | CdfJvp (dist, tangent_dist, point, point_tangent) ->
+  | CdfJvp (dist, parameter_tangents, point, point_tangent) ->
       sample_contains_sample dist
-      || sample_contains_sample tangent_dist
+      || List.exists texpr_contains_sample parameter_tangents
       || texpr_contains_sample point
       || texpr_contains_sample point_tangent
   | CdfVjp (dist, _, point, _, output_adjoint) ->
@@ -173,10 +173,9 @@ and sample_primal = function
   | Distr2 (kind, e1, e2) ->
       Distr2 (kind, dual_primal e1, dual_primal e2)
 
-and sample_tangent = function
-  | Distr1 (kind, e1) -> Distr1 (kind, dual_tangent e1)
-  | Distr2 (kind, e1, e2) ->
-      Distr2 (kind, dual_tangent e1, dual_tangent e2)
+and sample_tangents = function
+  | Distr1 (_, e1) -> [dual_tangent e1]
+  | Distr2 (_, e1, e2) -> [dual_tangent e1; dual_tangent e2]
 
 and cdf_kernel_dual env ((_, _, TAExprNode ae) as te) =
   match ae with
@@ -284,7 +283,7 @@ and det_ad env (ty, eff, TAExprNode ae) =
         (node
            (CdfJvp
               ( sample_primal dual_dist
-              , sample_tangent dual_dist
+              , sample_tangents dual_dist
               , dual_primal dual_point
               , dual_tangent dual_point )))
   | CdfExpr (kernel, point) ->

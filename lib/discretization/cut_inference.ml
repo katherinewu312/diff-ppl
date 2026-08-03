@@ -221,7 +221,7 @@ let infer_expr (e : expr) : texpr =
         (join [dist_eff; eff_of point_te])
         (Cdf (dist_exp', point_te))
 
-    | CdfJvp (dist_exp, tangent_dist_exp, point_e, point_tangent_e) ->
+    | CdfJvp (dist_exp, parameter_tangent_es, point_e, point_tangent_e) ->
       let infer_float e arg_name =
         let t, eff, a = aux env e in
         let arg_cut = Ast.fresh_cut_bag () in
@@ -242,7 +242,17 @@ let infer_expr (e : expr) : texpr =
               , infer_float e2 (label ^ " second argument") )
       in
       let dist_exp' = infer_sample "distribution" dist_exp in
-      let tangent_dist_exp' = infer_sample "distribution tangent" tangent_dist_exp in
+      let parameter_tangent_tes =
+        List.map
+          (fun tangent -> infer_float tangent "parameter tangent")
+          parameter_tangent_es
+      in
+      let expected_tangent_arity =
+        match dist_exp with Distr1 _ -> 1 | Distr2 _ -> 2
+      in
+      if List.length parameter_tangent_es <> expected_tangent_arity then
+        failwith
+          "CDF JVP parameter tangent arity does not match distribution arity";
       let point_te = infer_float point_e "point argument" in
       let point_tangent_te = infer_float point_tangent_e "point tangent" in
       let sample_eff = function
@@ -255,11 +265,12 @@ let infer_expr (e : expr) : texpr =
       mk (TFloat (cuts_bag, floats_bag, sym_bag))
         (join
            [ sample_eff dist_exp'
-           ; sample_eff tangent_dist_exp'
+           ; join (List.map eff_of parameter_tangent_tes)
            ; eff_of point_te
            ; eff_of point_tangent_te
            ])
-        (CdfJvp (dist_exp', tangent_dist_exp', point_te, point_tangent_te))
+        (CdfJvp
+           (dist_exp', parameter_tangent_tes, point_te, point_tangent_te))
 
     | CdfVjp
         (dist_exp, parameter_active, point_e, point_active, output_adjoint_e) ->

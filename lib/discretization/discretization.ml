@@ -60,11 +60,11 @@ let rec texpr_to_expr ((_, _, TAExprNode ae) : texpr) : expr =
   | Div (e1, e2) -> ExprNode (Div (texpr_to_expr e1, texpr_to_expr e2))
   | SpecialFunc (name, args) -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args))
   | Cdf (d, e1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr e1))
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       ExprNode
         (CdfJvp
            ( sample_to_expr d
-           , sample_to_expr dd
+           , List.map texpr_to_expr parameter_tangents
            , texpr_to_expr e1
            , texpr_to_expr de1 ))
   | CdfVjp (d, active, e1, point_active, bar) ->
@@ -134,9 +134,9 @@ let rec texpr_contains_sample ((_, _, TAExprNode ae) : texpr) : bool =
   | DiscreteCase cases ->
       List.exists (fun (b, p) -> texpr_contains_sample b || texpr_contains_sample p) cases
   | Cdf (_, e1) -> texpr_contains_sample e1
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       sample_contains_sample d
-      || sample_contains_sample dd
+      || List.exists texpr_contains_sample parameter_tangents
       || texpr_contains_sample e1
       || texpr_contains_sample de1
   | CdfVjp (d, _, e1, _, bar) ->
@@ -325,11 +325,11 @@ let discretize ?cut_order_at (e : texpr) : expr =
          | Some e -> e
          | None -> ExprNode (SpecialFunc (name, List.map texpr_to_expr args)))
     | Cdf (d, te1) -> ExprNode (Cdf (sample_to_expr d, texpr_to_expr te1))
-    | CdfJvp (d, dd, te1, dte1) ->
+    | CdfJvp (d, parameter_tangents, te1, dte1) ->
         ExprNode
           (CdfJvp
              ( sample_to_expr d
-             , sample_to_expr dd
+             , List.map texpr_to_expr parameter_tangents
              , texpr_to_expr te1
              , texpr_to_expr dte1 ))
     | CdfVjp (d, active, te1, point_active, bar) ->

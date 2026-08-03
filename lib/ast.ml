@@ -62,7 +62,7 @@ type 'a expr_generic =
      static metadata so an exact callback need not evaluate unavailable
      partials for inactive inputs.  Its result is a nested pair whose shape
      follows the distribution arity. *)
-  | CdfJvp of 'a sample * 'a sample * 'a * 'a
+  | CdfJvp of 'a sample * 'a list * 'a * 'a
   | CdfVjp of 'a sample * bool list * 'a * bool * 'a
   (* CDF of an arbitrary (sample-containing) expression evaluated at
      a point.  Used when the kernel on the LHS of a comparison is a

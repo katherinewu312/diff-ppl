@@ -437,6 +437,12 @@ let test_forward_raw_uses_let_bound_forward_rules _ =
   assert_close 0.6 tangent
 
 let test_forward_uniform_cdf_dual_simplifies _ =
+  let raw = forward_dual_raw_after_discretize "uniform(0, 1) < theta" in
+  let raw_plain = Slice.Pretty.string_of_expr_plain raw in
+  assert_bool "CDF JVP should store explicit parameter tangents"
+    (contains_substring raw_plain "dparams=[0, 0]");
+  assert_bool "CDF JVP should not encode tangents as a fake distribution"
+    (not (contains_substring raw_plain "uniform(0, 0)"));
   let dual = forward_dual_after_discretize "uniform(0, 1) < theta" in
   let primal, tangent = eval_dual_with_theta 0.3 dual in
   assert_equal
@@ -698,6 +704,25 @@ let test_exact_gamma_scale_jvp_callback _ =
       Slice.Ast.DGamma 2.0 3.0 0.0 1.0 6.0 0.0
   in
   assert_close (-4.0 /. 3.0 *. exp (-2.0)) actual
+
+let test_cdf_jvp_vjp_share_exact_coordinate_rules _ =
+  let check_two kind arg1 arg2 darg1 darg2 point dpoint output_adjoint =
+    let directional =
+      Slice.Cdf_callback.jvp_two
+        kind arg1 arg2 darg1 darg2 point dpoint
+    in
+    let arg1_adjoint, arg2_adjoint, point_adjoint =
+      Slice.Cdf_callback.vjp_two
+        kind arg1 arg2 true true point true output_adjoint
+    in
+    assert_close
+      (output_adjoint *. directional)
+      ((arg1_adjoint *. darg1)
+       +. (arg2_adjoint *. darg2)
+       +. (point_adjoint *. dpoint))
+  in
+  check_two Slice.Ast.DGaussian 1.0 2.0 0.3 (-0.7) 2.5 1.2 1.7;
+  check_two Slice.Ast.DUniform (-1.0) 4.0 0.2 0.6 1.5 (-0.4) 2.3
 
 let test_reverse_beta_point_vjp_skips_inactive_shapes _ =
   let dual = reverse_dual_after_discretize "beta(2, 3) < theta" in
@@ -1235,6 +1260,8 @@ let suite =
       >:: test_exact_gaussian_parameter_jvp_callback
   ; "test_exact_gamma_scale_jvp_callback"
       >:: test_exact_gamma_scale_jvp_callback
+  ; "test_cdf_jvp_vjp_share_exact_coordinate_rules"
+      >:: test_cdf_jvp_vjp_share_exact_coordinate_rules
   ; "test_reverse_beta_point_vjp_skips_inactive_shapes"
       >:: test_reverse_beta_point_vjp_skips_inactive_shapes
   ; "test_beta_shape_jvp_requires_exact_callback"

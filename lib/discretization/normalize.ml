@@ -130,9 +130,9 @@ let rec contains_sample_env (env : StringSet.t) (ExprNode e : expr) : bool =
       List.exists (fun (b, p) ->
         contains_sample_env env b || contains_sample_env env p) cases
   | Cdf (_, e1) -> contains_sample_env env e1
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       contains_sample_sample_env env d
-      || contains_sample_sample_env env dd
+      || List.exists (contains_sample_env env) parameter_tangents
       || contains_sample_env env e1
       || contains_sample_env env de1
   | CdfVjp (d, _, e1, _, bar) ->
@@ -407,11 +407,11 @@ let rec normalize_env (env : StringSet.t) (e : expr) : expr =
       ExprNode (SpecialFunc (name, List.map (normalize_env env) args))
   | Cdf (Distr1 (k, e1), e2) -> ExprNode (Cdf (Distr1 (k, normalize_env env e1), normalize_env env e2))
   | Cdf (Distr2 (k, e1, e2), e3) -> ExprNode (Cdf (Distr2 (k, normalize_env env e1, normalize_env env e2), normalize_env env e3))
-  | CdfJvp (d, dd, e1, de1) ->
+  | CdfJvp (d, parameter_tangents, e1, de1) ->
       ExprNode
         (CdfJvp
            ( normalize_sample_env env d
-           , normalize_sample_env env dd
+           , List.map (normalize_env env) parameter_tangents
            , normalize_env env e1
            , normalize_env env de1 ))
   | CdfVjp (d, active, e1, point_active, bar) ->

@@ -114,7 +114,17 @@ before the simplified AD output.
 
 Named-distribution CDFs remain opaque primitives in source-to-source AD.
 Forward mode emits `CDF_JVP` and reverse mode emits `CDF_VJP`; the primal
-`CDF` continues to use GSL. At runtime, the callbacks apply the Leibniz rule
+`CDF` continues to use GSL.  A forward node stores parameter tangents as an
+explicit ordered list rather than pretending that they form a distribution:
+
+```text
+CDF_JVP(uniform(0, 1), theta; dparams=[0, 0], dx=1)
+```
+
+The list has the same arity and order as the distribution parameters.  Both
+JVP and VJP callbacks use the same registry of exact coordinate partials, so
+reverse mode is the transpose of precisely the forward rules rather than a
+separate implementation.  At runtime, those rules correspond to Leibniz:
 
 ```text
 d CDF(params, x)
@@ -122,9 +132,9 @@ d CDF(params, x)
   + integral(-infinity, x, d PDF(params, t))
 ```
 
-The implementation does not evaluate this integral numerically.  Instead, the
-callback library contains exact formulas obtained by resolving the Leibniz
-integral analytically.  Point derivatives use the GSL density.  Exact
+The implementation does not evaluate this integral.  Instead, the callback
+library contains exact formulas obtained by resolving the Leibniz integral
+analytically.  Point derivatives use the GSL density.  Exact
 parameter callbacks are implemented for Uniform, Gaussian, Exponential,
 LogNormal, Laplace, Cauchy, Pareto, Weibull, Logistic, Gumbel1, Gumbel2, and
 Rayleigh; Gamma scale and Exppow scale are also supported exactly.

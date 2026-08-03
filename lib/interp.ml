@@ -252,29 +252,30 @@ let rec eval (env : env) (ExprNode e_node : expr) : value =
       in
       VFloat (Distributions.cdistr_cdf dist x)
 
-  | CdfJvp (dist_exp, tangent_dist_exp, e_point, e_point_tangent) ->
+  | CdfJvp (dist_exp, parameter_tangent_exps, e_point, e_point_tangent) ->
       let x = float_value "CdfJvp: point argument" (eval env e_point) in
       let dx =
         float_value "CdfJvp: point tangent" (eval env e_point_tangent)
       in
+      let parameter_tangents =
+        List.map
+          (fun tangent ->
+             float_value "CdfJvp: distribution tangent" (eval env tangent))
+          parameter_tangent_exps
+      in
       (try
-         match dist_exp, tangent_dist_exp with
-         | Distr1 (kind, arg), Distr1 (tangent_kind, darg)
-           when kind = tangent_kind ->
+         match dist_exp, parameter_tangents with
+         | Distr1 (kind, arg), [darg] ->
              let arg = float_value "CdfJvp: distribution argument" (eval env arg) in
-             let darg =
-               float_value "CdfJvp: distribution tangent" (eval env darg)
-             in
              VFloat (Cdf_callback.jvp_single kind arg darg x dx)
-         | Distr2 (kind, arg1, arg2), Distr2 (tangent_kind, darg1, darg2)
-           when kind = tangent_kind ->
+         | Distr2 (kind, arg1, arg2), [darg1; darg2] ->
              let arg1 = float_value "CdfJvp: first distribution argument" (eval env arg1) in
              let arg2 = float_value "CdfJvp: second distribution argument" (eval env arg2) in
-             let darg1 = float_value "CdfJvp: first distribution tangent" (eval env darg1) in
-             let darg2 = float_value "CdfJvp: second distribution tangent" (eval env darg2) in
              VFloat (Cdf_callback.jvp_two kind arg1 arg2 darg1 darg2 x dx)
          | _ ->
-             raise (RuntimeError "CdfJvp: primal and tangent distributions must have the same kind")
+             raise
+               (RuntimeError
+                  "CdfJvp: parameter tangent arity does not match distribution arity")
        with Cdf_callback.Unsupported msg -> raise (RuntimeError ("CdfJvp: " ^ msg)))
 
   | CdfVjp
