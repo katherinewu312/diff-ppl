@@ -331,6 +331,7 @@ let one_dim_mass id lo hi predicates bits =
     | _ -> acc
   in total 0.0 points /. (hi -. lo)
 
+(* Do the 1D/2D integration *)
 let component_mass infos predicates bits =
   let ids = List.map (fun s -> s.id) infos in
   match infos with
@@ -397,6 +398,7 @@ module Exact_region_mass : REGION_MASS = struct
     | Error reason -> Error reason
 end
 
+(* Union-finds seed samples into components. Collect all predicates touching each component. *)
 let build_components analysis =
   if analysis.seeds = [] then [] else
   let uf = Hashtbl.create 16 in
@@ -463,6 +465,7 @@ let build_components analysis =
       in
       let regions = refine [] [([], 1.0)] predicates
       in
+      (* Check the masses sum to 1. *)
       let total = List.fold_left (fun s (_,p) -> s+.p) 0.0 regions in
       if abs_float (total -. 1.0) > 1e-9 then
         unsupported "region masses sum to %.17g instead of 1" total;
@@ -522,6 +525,8 @@ let transform (root : expr) : expr option =
   let find_component p =
     List.find_opt (fun c -> not (IntSet.is_empty (IntSet.inter c.ids p.deps))) components
   in
+
+  (* Rewalk the AST and rewrite the semantically equivalent program. Each component is wrapped in a Let __regionN = DiscreteCase [(0,p0);(1,p1);…] *)
   let rec rewrite env (ExprNode node) =
     let rec binary name ctor a b =
       let a,sa = rewrite env a and b,sb = rewrite env b in
