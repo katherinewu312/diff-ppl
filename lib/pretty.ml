@@ -546,6 +546,7 @@ and string_of_ty = function
       in
       let rec string_of_prov = function
         | SConst f -> Printf.sprintf "%g" f
+        | SParam name -> name
         | SSample id -> Printf.sprintf "u%d" id
         | SAdd (a, b) ->
             Printf.sprintf "(%s+%s)" (string_of_prov a) (string_of_prov b)

@@ -219,6 +219,7 @@ type sample_id = int
 
 type sym_expr =
   | SConst of float
+  | SParam of string
   | SSample of sample_id
   | SAdd of sym_expr * sym_expr
   | SMul of sym_expr * sym_expr
@@ -228,6 +229,7 @@ type sym_expr =
 let rec compare_sym_expr a b =
   match a, b with
   | SConst x, SConst y -> compare x y
+  | SParam x, SParam y -> compare x y
   | SSample x, SSample y -> compare x y
   | SAdd (a1, a2), SAdd (b1, b2)
   | SMul (a1, a2), SMul (b1, b2)
@@ -236,6 +238,7 @@ let rec compare_sym_expr a b =
       if c = 0 then compare_sym_expr a2 b2 else c
   | SNeg a, SNeg b -> compare_sym_expr a b
   | SConst _, _ -> -1 | _, SConst _ -> 1
+  | SParam _, _ -> -1 | _, SParam _ -> 1
   | SSample _, _ -> -1 | _, SSample _ -> 1
   | SNeg _, _ -> -1 | _, SNeg _ -> 1
   | SAdd _, _ -> -1 | _, SAdd _ -> 1

@@ -300,6 +300,11 @@ and det_ad env (ty, eff, TAExprNode ae) =
              pair
                primal
                (div (dual_tangent darg) (mul (const 2.0) primal))
+         | "unit_square_radial_cdf", [darg] ->
+             pair primal
+               (mul (dual_tangent darg)
+                  (Simplify.mk_special "unit_square_radial_pdf"
+                     [dual_primal darg]))
          | _ ->
              pair
                primal

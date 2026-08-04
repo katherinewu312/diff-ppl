@@ -76,6 +76,20 @@ let special_value name args =
   | "pow", [x; y] -> Some (x ** y)
   | "erf", [x] -> Some (Gsl.Sf.erf x)
   | "atan", [x] -> Some (atan x)
+  | "unit_square_radial_cdf", [t] ->
+      let quarter_pi = atan 1.0 in
+      if t <= 0.0 then Some 0.0
+      else if t <= 1.0 then Some (t *. quarter_pi)
+      else if t < 2.0 then
+        Some
+          (sqrt (t -. 1.0)
+           +. t *. (asin (1.0 /. sqrt t) -. quarter_pi))
+      else Some 1.0
+  | "unit_square_radial_pdf", [t] ->
+      let quarter_pi = atan 1.0 in
+      if t <= 0.0 || t >= 2.0 then Some 0.0
+      else if t <= 1.0 then Some quarter_pi
+      else Some (asin (1.0 /. sqrt t) -. quarter_pi)
   | "abs", [x] -> Some (abs_float x)
   | "beta", [x; y] -> Some (Gsl.Sf.beta x y)
   | "beta_inc", [a; b; x] -> Some (Gsl.Sf.beta_inc a b x)

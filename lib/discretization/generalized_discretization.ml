@@ -47,18 +47,26 @@ let unsupported fmt =
     fmt
 
 let rec deps = function
-  | SConst _ -> IntSet.empty
+  | SConst _ | SParam _ -> IntSet.empty
   | SSample id -> IntSet.singleton id
   | SNeg x -> deps x
   | SAdd (a, b) | SMul (a, b) | SDiv (a, b) -> IntSet.union (deps a) (deps b)
 
 let rec string_of_sym_expr = function
   | SConst f -> Printf.sprintf "%g" f
+  | SParam name -> name
   | SSample id -> Printf.sprintf "u%d" id
   | SNeg x -> "(-" ^ string_of_sym_expr x ^ ")"
   | SAdd (a,b) -> "(" ^ string_of_sym_expr a ^ "+" ^ string_of_sym_expr b ^ ")"
   | SMul (a,b) -> "(" ^ string_of_sym_expr a ^ "*" ^ string_of_sym_expr b ^ ")"
   | SDiv (a,b) -> "(" ^ string_of_sym_expr a ^ "/" ^ string_of_sym_expr b ^ ")"
+
+let rec contains_parameter = function
+  | SParam _ -> true
+  | SConst _ | SSample _ -> false
+  | SNeg x -> contains_parameter x
+  | SAdd (a,b) | SMul (a,b) | SDiv (a,b) ->
+      contains_parameter a || contains_parameter b
 
 let commutative ctor a b =
   if compare_sym_expr a b <= 0 then ctor a b else ctor b a
@@ -67,7 +75,7 @@ let sadd a b = commutative (fun x y -> SAdd (x, y)) a b
 let smul a b = commutative (fun x y -> SMul (x, y)) a b
 
 let is_scalar_cut = function
-  | SSample _, SConst _ | SConst _, SSample _ -> true
+  | SSample _, rhs | rhs, SSample _ -> IntSet.is_empty (deps rhs)
   | _ -> false
 
 let const = function ExprNode (Const f) -> Some f | _ -> None
@@ -85,7 +93,10 @@ let analyze (root : expr) : analysis =
     in
     match node with
     | Const f -> Some (SConst f)
-    | Var x -> StringMap.find_opt x env |> Option.join
+    | Var x ->
+        (match StringMap.find_opt x env with
+         | Some provenance -> provenance
+         | None -> Some (SParam x))
     | Add (a, b) -> binary sadd a b
     | Sub (a, b) -> binary (fun x y -> sadd x (SNeg y)) a b
     | Mul (a, b) -> binary smul a b
@@ -173,7 +184,7 @@ let uf_union table a b =
 
 let complexity p =
   let rec size = function
-    | SConst _ | SSample _ -> 1 | SNeg x -> 1 + size x
+    | SConst _ | SParam _ | SSample _ -> 1 | SNeg x -> 1 + size x
     | SAdd (a,b) | SMul (a,b) | SDiv (a,b) -> 1 + size a + size b
   in size p.left + size p.right
 
@@ -189,8 +200,25 @@ type component = {
   ids : IntSet.t;
   predicates : predicate list;
   var : string;
-  regions : (bool list * float) list;
+  regions : (bool list * expr) list;
 }
+
+let rec expr_of_parameter = function
+  | SConst f -> ExprNode (Const f)
+  | SParam name -> ExprNode (Var name)
+  | SNeg x -> ExprNode (Sub (ExprNode (Const 0.0), expr_of_parameter x))
+  | SAdd (a,b) -> ExprNode (Add (expr_of_parameter a, expr_of_parameter b))
+  | SMul (a,b) -> ExprNode (Mul (expr_of_parameter a, expr_of_parameter b))
+  | SDiv (a,b) -> ExprNode (Div (expr_of_parameter a, expr_of_parameter b))
+  | SSample id -> unsupported "sample u%d occurs in a symbolic parameter expression" id
+
+let symbolic_unit_square_radial_cdf threshold =
+  (* Like the scalar [Cdf] node, keep the exact parameterized integral opaque
+     in generated Slice.  The callback evaluates the analytic, piecewise
+     unit-square formula; no quadrature is involved. *)
+  ExprNode
+    (SpecialFunc
+       ("unit_square_radial_cdf", [expr_of_parameter threshold]))
 
 let linear ids expr =
   let n = List.length ids in
@@ -201,6 +229,7 @@ let linear ids expr =
   let scale k (c, a) = (k *. c, Array.map (( *. ) k) a) in
   let rec go = function
     | SConst c -> Some (c, zero ())
+    | SParam _ -> None
     | SSample id ->
         (match list_find_index ((=) id) ids with
          | None -> None
@@ -270,6 +299,26 @@ let radial ids p =
   | Some (), SConst t -> Some t
   | _ -> None
 
+let radial_symbolic_threshold ids p =
+  let identify expr = match expr with
+    | SAdd (a,b) ->
+        Option.bind (square_term a) (fun x ->
+          Option.bind (square_term b) (fun y ->
+            if IntSet.equal (IntSet.of_list [x;y]) (IntSet.of_list ids)
+            then Some () else None))
+    | _ -> None
+  in
+  let rec parameter_only = function
+    | SConst _ | SParam _ -> true
+    | SNeg x -> parameter_only x
+    | SAdd (a,b) | SMul (a,b) | SDiv (a,b) ->
+        parameter_only a && parameter_only b
+    | SSample _ -> false
+  in
+  match identify p.left with
+  | Some () when parameter_only p.right -> Some p.right
+  | _ -> None
+
 let primitive_circle t x =
   if t <= 0.0 then 0.0 else
   let r = sqrt t in
@@ -300,6 +349,7 @@ let circle_rectangle_area t x0 x1 y0 y1 =
 let eval_sym values =
   let rec go = function
     | SConst f -> f | SSample id -> List.assoc id values | SNeg a -> -. go a
+    | SParam name -> unsupported "cannot numerically evaluate symbolic parameter %s" name
     | SAdd (a,b) -> go a +. go b | SMul (a,b) -> go a *. go b
     | SDiv (a,b) -> go a /. go b
   in go
@@ -442,33 +492,69 @@ let build_components analysis =
                  reason component_name (string_of_sym_expr predicate.left) op
                  (string_of_sym_expr predicate.right))
       in
-      (* Refine incrementally.  Impossible partial truth patterns disappear
-         before the next predicate, rather than materializing all [2^m]
-         assignments. *)
-      let rec refine prefix active = function
-        | [] -> active
-        | p :: rest ->
-            let prefix = prefix @ [p] in
-            let active =
-              List.concat_map
-                (fun (bits, _) ->
-                   [bits @ [true]; bits @ [false]]
-                   |> List.filter_map (fun bits ->
-                        let mass = exact_mass prefix bits in
-                        if mass > 1e-12 then Some (bits, mass)
-                        else if mass >= -.1e-10 then None
-                        else unsupported
-                          "analytic backend produced negative mass %.17g" mass))
-                active
+      let symbolic_predicates =
+        List.filter
+          (fun p -> contains_parameter p.left || contains_parameter p.right)
+          predicates
+      in
+      let regions =
+        match symbolic_predicates with
+        | [] ->
+            (* Refine incrementally. Impossible partial truth patterns
+               disappear before the next predicate. *)
+            let rec refine prefix active = function
+              | [] -> active
+              | p :: rest ->
+                  let prefix = prefix @ [p] in
+                  let active =
+                    List.concat_map
+                      (fun (bits, _) ->
+                         [bits @ [true]; bits @ [false]]
+                         |> List.filter_map (fun bits ->
+                              let mass = exact_mass prefix bits in
+                              if mass > 1e-12 then
+                                Some (bits, ExprNode (Const mass))
+                              else if mass >= -.1e-10 then None
+                              else unsupported
+                                "analytic backend produced negative mass %.17g" mass))
+                      active
+                  in
+                  refine prefix active rest
             in
-            refine prefix active rest
+            let regions = refine [] [([], ExprNode (Const 1.0))] predicates in
+            let total =
+              List.fold_left
+                (fun total (_, probability) ->
+                   match probability with
+                   | ExprNode (Const p) -> total +. p
+                   | _ -> failwith "internal numeric region mass")
+                0.0 regions
+            in
+            if abs_float (total -. 1.0) > 1e-9 then
+              unsupported "region masses sum to %.17g instead of 1" total;
+            regions
+        | [p] when predicates = [p] ->
+            let unit_support =
+              match infos with
+              | [{lo=Some 0.0; hi=Some 1.0; _};
+                 {lo=Some 0.0; hi=Some 1.0; _}] -> true
+              | _ -> false
+            in
+            if not unit_support then
+              unsupported
+                "symbolic radial mass currently requires Uniform(0,1) x Uniform(0,1)";
+            (match radial_symbolic_threshold (IntSet.elements ids) p with
+             | Some threshold ->
+                 let inside = symbolic_unit_square_radial_cdf threshold in
+                 [ [true], inside
+                 ; [false], ExprNode (Sub (ExprNode (Const 1.0), inside)) ]
+             | None ->
+                 unsupported
+                   "symbolic region mass currently supports one origin-centered radial predicate")
+        | _ ->
+            unsupported
+              "symbolic region mass currently supports exactly one predicate per component"
       in
-      let regions = refine [] [([], 1.0)] predicates
-      in
-      (* Check the masses sum to 1. *)
-      let total = List.fold_left (fun s (_,p) -> s+.p) 0.0 regions in
-      if abs_float (total -. 1.0) > 1e-9 then
-        unsupported "region masses sum to %.17g instead of 1" total;
       { ids; predicates; var = Printf.sprintf "__region%d" index; regions })
 
 let predicate_equal a b =
@@ -512,8 +598,25 @@ let transform (root : expr) : expr option =
     | Some {lo=Some _; hi=Some _; _} -> true
     | _ -> false
   in
+  let supported_symbolic_seed p =
+    let ids = IntSet.elements p.deps in
+    match ids with
+    | [_; _] ->
+        List.for_all supported_uniform ids
+        && (match radial_symbolic_threshold ids p with Some _ -> true | None -> false)
+    | _ -> false
+  in
+  let has_unsupported_symbolic_seed =
+    List.exists
+      (fun p ->
+         (contains_parameter p.left || contains_parameter p.right)
+         && not (supported_symbolic_seed p))
+      analysis.seeds
+  in
   let components =
-    if not (IntSet.for_all supported_uniform seeded_ids) then []
+    if has_unsupported_symbolic_seed
+       || not (IntSet.for_all supported_uniform seeded_ids)
+    then []
     else build_components analysis
   in
   if components = [] then None else
@@ -542,7 +645,13 @@ let transform (root : expr) : expr option =
     in
     match node with
     | Const f -> Some (ExprNode (Const f)), Some (SConst f)
-    | Var x -> Some (ExprNode (Var x)), Option.value (StringMap.find_opt x env) ~default:None
+    | Var x ->
+        let provenance =
+          match StringMap.find_opt x env with
+          | Some provenance -> provenance
+          | None -> Some (SParam x)
+        in
+        Some (ExprNode (Var x)), provenance
     | Sample d ->
         let id = !next_id in incr next_id;
         let s = SSample id in
@@ -604,6 +713,6 @@ let transform (root : expr) : expr option =
   let body = need "program result" body in
   let result = List.fold_right (fun c body ->
     let n = List.length c.regions in
-    let cases = List.mapi (fun i (_,p) -> ExprNode(FinConst(i,n)),ExprNode(Const p)) c.regions in
+    let cases = List.mapi (fun i (_,p) -> ExprNode(FinConst(i,n)),p) c.regions in
     ExprNode(Let(c.var,ExprNode(DiscreteCase cases),body))) components body
   in Some result

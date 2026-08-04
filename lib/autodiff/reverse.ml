@@ -240,6 +240,21 @@ and trans env (ty, _, TAExprNode ae) =
                          (adjoint_value yhat)
                          (mul (const 2.0) (primal yhat)))
                   ])))
+  | SpecialFunc ("unit_square_radial_cdf", [e1]) ->
+      bind_rev "_rev_yhat" (trans env e1) (fun yhat1 ->
+        let cont = Util.fresh_var "_rev_k" in
+        shift cont
+          (bind_rev "_rev_yhat"
+             (reverse_float
+                (special "unit_square_radial_cdf" [primal yhat1]))
+             (fun yhat ->
+                sequence
+                  [ apply_cont cont yhat
+                  ; add_adjoint yhat1
+                      (mul
+                         (adjoint_value yhat)
+                         (special "unit_square_radial_pdf" [primal yhat1]))
+                  ])))
   | SpecialFunc (name, _) ->
       unsupported ("reverse differentiation of special function " ^ name ^ " is not implemented")
   | Let (x, e1, e2) ->

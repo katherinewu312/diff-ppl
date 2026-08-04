@@ -156,7 +156,10 @@ let infer_expr (e : expr) : texpr =
         let cuts_bag = Ast.fresh_cut_bag () in
         let floats_bag = Lats.fresh_float_bag () in
         let sym_bag = singleton_sym_bag (ExprNode (Var x)) in
-        pure (TFloat (cuts_bag, floats_bag, sym_bag, Ast.fresh_prov_bag ())) (Var x))
+        let prov =
+          Ast.ProvLat.create (Finite (Ast.ProvSet.singleton (SParam x)))
+        in
+        pure (TFloat (cuts_bag, floats_bag, sym_bag, prov)) (Var x))
 
     | Let (x, e1, e2) ->
       let t1, eff1, a1 = aux env e1 in
