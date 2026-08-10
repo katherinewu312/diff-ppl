@@ -99,13 +99,34 @@ and unify (t1 : ty) (t2 : ty) : unit =
     in
     failwith unified_msg
 
-(* Construct a fresh TFloat for an arithmetic result whose value is
-   represented by the symbolic expression [orig_expr] (the original
-   surface-syntax form). *)
-let arith_result_ty (orig_expr : expr) (prov_bag : Ast.ProvLat.bag) : ty =
+(* Provenance records whether an expression depends on a sampling site.
+   Only sample-free arithmetic is also useful as a symbolic cut value. *)
+let rec provenance_contains_sample = function
+  | SConst _ | SParam _ -> false
+  | SSample _ -> true
+  | SNeg e -> provenance_contains_sample e
+  | SAdd (e1, e2) | SMul (e1, e2) | SDiv (e1, e2) ->
+      provenance_contains_sample e1 || provenance_contains_sample e2
+
+let provenance_bag_contains_sample (prov_bag : Ast.ProvLat.bag) : bool =
+  match Ast.ProvLat.get prov_bag with
+  | Top -> true
+  | Finite provenance -> Ast.ProvSet.exists provenance_contains_sample provenance
+
+(* Construct the type of an arithmetic result.  Its concrete-value bag is
+   supplied by [arith_aux], which propagates Top from sample-valued operands.
+   Sample-free arithmetic is retained in both the symbolic and provenance
+   components; sample-dependent arithmetic is retained only in provenance. *)
+let arith_result_ty
+    (orig_expr : expr)
+    (floats_bag : Lats.FloatLat.bag)
+    (prov_bag : Ast.ProvLat.bag)
+    ~(sample_dependent : bool) : ty =
   let cuts_bag = Ast.fresh_cut_bag () in
-  let floats_bag = Lats.fresh_float_bag () in (* empty: value is symbolic *)
-  let sym_bag = singleton_sym_bag orig_expr in
+  let sym_bag =
+    if sample_dependent then Ast.fresh_sym_bag ()
+    else singleton_sym_bag orig_expr
+  in
   TFloat (cuts_bag, floats_bag, sym_bag, prov_bag)
 
 (* Add a single symbolic-expression cut to a cut bag (only if the
@@ -770,9 +791,9 @@ let infer_expr (e : expr) : texpr =
       let t1, eff1, a1 = aux env' e1 in
       mk t1 eff1 (Shift (k, (t1, eff1, a1)))
 
-  (* Inference for an arithmetic operation; the result's type is a
-     fresh symbolic float whose sym-bag identifies the whole
-     [orig_expr]. *)
+  (* Inference for an arithmetic operation.  Sample-valued operands make the
+     result's concrete-value bag Top, and sample-dependent arithmetic is kept
+     in provenance rather than in the symbolic-value bag. *)
   and arith_aux env orig_expr e1 e2 op_name rebuild =
     let t1, eff1, a1 = aux env e1 in
     let t2, eff2, a2 = aux env e2 in
@@ -818,7 +839,29 @@ let infer_expr (e : expr) : texpr =
           Ast.ProvLat.create (Finite result)
       | Top, _ | _, Top -> Ast.ProvLat.create Top
     in
-    let result_ty = arith_result_ty orig_expr prov_bag in
+    let floats_bag = Lats.fresh_float_bag () in
+    let propagate_top source =
+      Lats.FloatLat.listen source (fun () ->
+        match Lats.FloatLat.get source with
+        | Top ->
+            Lats.FloatLat.leq (Lats.FloatLat.create Top) floats_bag
+        | Finite _ -> ())
+    in
+    propagate_top dummy_float1;
+    propagate_top dummy_float2;
+    let has_probabilistic_effect eff =
+      match Ast.force_effect eff with
+      | Prob -> true
+      | Pure | EMeta _ -> false
+    in
+    let sample_dependent =
+      provenance_bag_contains_sample prov_bag
+      || has_probabilistic_effect eff1
+      || has_probabilistic_effect eff2
+    in
+    let result_ty =
+      arith_result_ty orig_expr floats_bag prov_bag ~sample_dependent
+    in
     mk result_ty (join [eff1; eff2])
       (rebuild (t1, eff1, a1) (t2, eff2, a2))
 
