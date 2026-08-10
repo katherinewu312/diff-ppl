@@ -87,7 +87,7 @@ type expr = ExprNode of expr expr_generic
 (* ================================================================ *)
 (* Cut values, cut sets, and symbolic-expression sets               *)
 (* These need to be declared after [expr] is defined because        *)
-(* symbolic cuts and the sym-bag both carry [expr] payloads.        *)
+(* symbolic cuts and symbolic value summaries carry [expr] payloads. *)
 (* ================================================================ *)
 
 (* A cut value is either a concrete float constant or a symbolic
@@ -207,14 +207,43 @@ module SymSetContents : Lat with type t = (string * expr, SymSet.t) set_or_top =
     | _, _ -> false
 end
 
-module SymLat = Make(SymSetContents)
+(* ---------------- Unified value-summary bag ---------------- *)
+(* [ValueLat] is the product of concrete value and
+   symbolic value lattices. *)
+type value_summary =
+  { concrete : (float, FloatSet.t) set_or_top
+  ; symbolic : (string * expr, SymSet.t) set_or_top
+  }
 
-let fresh_sym_bag () : SymLat.bag =
-  SymLat.create (Finite SymSet.empty)
+module ValueSummaryContents : Lat with type t = value_summary = struct
+  type t = value_summary
 
-(* Symbolic provenance for primitive continuous samples.  Unlike [SymLat],
-   which records source expressions used by the legacy cut analysis, this IR
-   preserves sampling-site identity through arithmetic. *)
+  let union a b =
+    { concrete = FloatSetContents.union a.concrete b.concrete
+    ; symbolic = SymSetContents.union a.symbolic b.symbolic
+    }
+
+  let equal a b =
+    FloatSetContents.equal a.concrete b.concrete
+    && SymSetContents.equal a.symbolic b.symbolic
+end
+
+module ValueLat = Make(ValueSummaryContents)
+
+let value_summary concrete symbolic : value_summary =
+  { concrete; symbolic }
+
+let fresh_value_bag () : ValueLat.bag =
+  ValueLat.create
+    (value_summary (Finite FloatSet.empty) (Finite SymSet.empty))
+
+let value_bag concrete symbolic : ValueLat.bag =
+  ValueLat.create (value_summary concrete symbolic)
+
+(* Symbolic provenance for primitive continuous samples.  Unlike the symbolic
+   coordinate of [ValueLat], which records source expressions used by the
+   legacy cut analysis, this IR preserves sampling-site identity through
+   arithmetic. *)
 type sample_id = int
 
 type sym_expr =
@@ -279,10 +308,9 @@ type meta =
 and meta_ref = meta ref
 and ty =
   | TBool
-  | TFloat of CutLat.bag * FloatLat.bag * SymLat.bag * ProvLat.bag
+  | TFloat of CutLat.bag * ValueLat.bag * ProvLat.bag
       (* cut bag (cuts applied to this expression),
-         float bag (concrete constants this expression may take),
-         sym bag (legacy symbolic values),
+         value-summary bag (concrete and legacy symbolic values),
          provenance bag (sample-identity-preserving arithmetic). *)
   | TPair of ty * ty
   | TFun of ty * effect * ty
@@ -374,7 +402,7 @@ let assign (m : meta_ref) (t : ty) : unit =
 (* Function to recursively set all bound bags in float types to top *)
 let rec set_cut_bags_to_top (t : ty) : unit =
   match force t with
-  | TFloat (cut_bag, _float_bag, _sym_bag, _prov_bag) ->
+  | TFloat (cut_bag, _value_bag, _prov_bag) ->
       CutLat.leq (CutLat.create Top) cut_bag
   | TPair (t1, t2) ->
       set_cut_bags_to_top t1;

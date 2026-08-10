@@ -2,7 +2,7 @@
 
    Float types still use [Ast.TFloat] so the existing typed AST remains the
    interchange format between passes, but this module does not populate or
-   propagate discretization cuts, concrete values, or symbolic values.  That
+   propagate discretization cuts or value summaries.  That
    work belongs to [Cut_inference]. *)
 
 open Ast
@@ -14,8 +14,7 @@ type typed_expr = texpr
 let fresh_float_ty () =
   TFloat
     ( Ast.fresh_cut_bag ()
-    , Lats.fresh_float_bag ()
-    , Ast.fresh_sym_bag ()
+    , Ast.fresh_value_bag ()
     , Ast.fresh_prov_bag () )
 
 (* Enforce [t_sub <: t_super] using only type shape and effects. *)

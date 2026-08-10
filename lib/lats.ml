@@ -23,9 +23,3 @@ module FloatSetContents : Lat with type t = (float, FloatSet.t) set_or_top = str
     | Finite s1, Finite s2 -> FloatSet.equal s1 s2
     | _, _ -> false
 end
-
-(* == Lat Instantiation == *)
-module FloatLat = Make(FloatSetContents)
-
-let fresh_float_bag () : FloatLat.bag =
-  FloatLat.create (Finite FloatSet.empty)

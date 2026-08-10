@@ -54,7 +54,7 @@ let string_of_cdistr = function
 
 (* ============== Plain (uncolored) pretty-printer for canonical
    identities of symbolic expressions.  Used only as a stable
-   string key for sym-bags / cut-bags. ============== *)
+   string key for symbolic values / cut bags. ============== *)
 
 let rec string_of_expr_plain (ExprNode e : expr) : string =
   match e with
@@ -508,7 +508,7 @@ and string_of_aexpr_node ?(indent=0) (TAExprNode ae_node) : string =
 
 and string_of_ty = function
   | TBool -> Printf.sprintf "%sbool%s" type_color reset_color
-  | TFloat (cut_bag_ref, const_bag_ref, sym_bag_ref, prov_bag_ref) ->
+  | TFloat (cut_bag_ref, value_bag_ref, prov_bag_ref) ->
       let bounds_str =
         match Ast.CutLat.get cut_bag_ref with
         | Top -> "T"
@@ -526,8 +526,9 @@ and string_of_ty = function
               let elements = Ast.CutSet.elements bound_set in
               String.concat "," (List.map string_of_cut elements)
       in
+      let value_summary = Ast.ValueLat.get value_bag_ref in
       let consts_str =
-        match FloatLat.get const_bag_ref with
+        match value_summary.concrete with
         | Top -> "T"
         | Finite float_set ->
             if FloatSet.is_empty float_set then ""
@@ -536,7 +537,7 @@ and string_of_ty = function
               String.concat "," (List.map (Printf.sprintf "%g") elements)
       in
       let syms_str =
-        match Ast.SymLat.get sym_bag_ref with
+        match value_summary.symbolic with
         | Top -> "T"
         | Finite sym_set ->
             if Ast.SymSet.is_empty sym_set then ""
@@ -564,12 +565,17 @@ and string_of_ty = function
             |> List.map string_of_prov
             |> String.concat ","
       in
+      let values_str =
+        match consts_str, syms_str with
+        | "", s | s, "" -> s
+        | c, s -> c ^ "," ^ s
+      in
       let content_str =
-        if bounds_str = "" && consts_str = "" && syms_str = "" && prov_str = ""
+        if bounds_str = "" && values_str = "" && prov_str = ""
         then ""
         else
-          Printf.sprintf "%s[%s; %s; %s; %s]%s"
-            type_color bounds_str consts_str syms_str prov_str reset_color
+          Printf.sprintf "%s[%s; %s; %s]%s"
+            type_color bounds_str values_str prov_str reset_color
       in
       Printf.sprintf "%sfloat%s%s" type_color reset_color content_str
   | TPair (t1, t2) ->
