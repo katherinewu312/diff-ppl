@@ -1,0 +1,8 @@
+let sum = fix sum xs :=
+  match xs with
+  | nil -> 0
+  | x :: rest -> x + sum rest
+  end
+in
+let x = uniform(0, 1) in
+if sum (x :: x :: nil) < theta then 1 else 0

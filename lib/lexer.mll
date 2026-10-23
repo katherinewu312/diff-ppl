@@ -44,8 +44,8 @@ let keywords = [
 
 let white = [' ' '\t' '\n' '\r']+
 let digit = ['0'-'9']
-let int = '-'? digit+
-let float = '-'? digit+ ('.' digit*)? ('e' ['+' '-']? digit+)?
+let int = digit+
+let float = digit+ ('.' digit*)? (['e' 'E'] ['+' '-']? digit+)?
 let lower = ['a'-'z']
 let upper = ['A'-'Z']
 let alpha = lower | upper | '_'
@@ -53,9 +53,9 @@ let ident = alpha (alpha | digit)*
 let comment = "(*" [^ '*']* "*)" | "(*" [^ '*']* "*" ([^ ')'] [^ '*']* "*")* ")"
 
 rule token = parse
-  | white     { token lexbuf }
+  | [' ' '\t' '\r']+ { token lexbuf }
   | '\n'      { next_line lexbuf; token lexbuf }
-  | comment   { token lexbuf }
+  | "(*"      { comment lexbuf; token lexbuf }
   | "let"     { LET }
   | "in"      { IN }
   | "if"      { IF }
@@ -74,6 +74,7 @@ rule token = parse
   | "beta"    { BETA }
   | "lognormal" { LOGNORMAL }
   | "discrete" { DISCRETE }
+  | "flip"    { FLIP }
   | "fst"     { FST }
   | "snd"     { SND }
   | "fun"     { FUN }
@@ -125,7 +126,8 @@ rule token = parse
   | _ as c    { error lexbuf (Printf.sprintf "Unexpected character: %c" c) }
 
 and comment = parse
+  | "(*" { comment lexbuf; comment lexbuf }
   | "*)" { () }
   | '\n' { next_line lexbuf; comment lexbuf }
-  | eof  { failwith "Unterminated comment" }
+  | eof  { error lexbuf "Unterminated comment" }
   | _    { comment lexbuf }

@@ -1,0 +1,4 @@
+let make_test = fun threshold -> fun x -> x < threshold in
+let test = make_test theta in
+let u = uniform(0, 1) in
+if test u then 1 else 0

@@ -1,0 +1,2 @@
+let u = uniform(0, 1) in
+if u < theta then 1 else 0

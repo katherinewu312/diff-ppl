@@ -1,6 +1,0 @@
-let x = uniform(0,1) in
-let y = uniform(0,1) in
-let z = x + y in
-if z < 0.3 then
-    if x < 0.2 then true else false
-else false

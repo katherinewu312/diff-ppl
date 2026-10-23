@@ -5,3 +5,10 @@ _build/
 
 # LaTeX build artifacts
 tex/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out

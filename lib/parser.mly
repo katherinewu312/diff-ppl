@@ -15,6 +15,7 @@ open Ast
 %token BETA
 %token LOGNORMAL
 %token DISCRETE
+%token FLIP
 %token FST SND
 %token FUN ARROW
 %token LESS
@@ -168,6 +169,7 @@ cons_expr:
 
 /* Prefix operators level */
 prefix_expr:                  (* New level for prefix ops like ! and ref *)
+  | MINUS prefix_expr         { ExprNode (Sub (ExprNode (Const 0.), $2)) }
   | BANG prefix_expr          { ExprNode (Deref $2) }
   | REF prefix_expr           { ExprNode (Ref $2) }
   | app_expr { $1 }           /* Fallthrough to app_expr */
@@ -190,6 +192,7 @@ atomic_expr:
   | k = INT HASH n = INT
     { if k < 0 || k >= n then failwith (Printf.sprintf "Invalid FinConst: %d#%d" k n) else ExprNode (FinConst (k, n)) }
   | x = IDENT                 { ExprNode (Var x) }
+  | FLIP LPAREN p = expr RPAREN { ExprNode (Flip p) }
   | DISCRETE LPAREN probs = separated_nonempty_list(COMMA, expr) RPAREN
     {
       (* Syntax: discrete(p1, p2, ...) where each pi is a
@@ -198,43 +201,43 @@ atomic_expr:
       let cases = List.mapi (fun i p -> (ExprNode (FinConst (i, n)), p)) probs in
       ExprNode (DiscreteCase cases)
     }
-  | UNIFORM LPAREN lo = app_expr COMMA hi = app_expr RPAREN
+  | UNIFORM LPAREN lo = expr COMMA hi = expr RPAREN
     { ExprNode (Sample (Distr2 (DUniform, lo, hi))) }
-  | GAUSSIAN LPAREN mean = app_expr COMMA std = app_expr RPAREN
+  | GAUSSIAN LPAREN mean = expr COMMA std = expr RPAREN
     { ExprNode (Sample (Distr2 (DGaussian, mean, std))) }
-  | EXPONENTIAL LPAREN rate = app_expr RPAREN
+  | EXPONENTIAL LPAREN rate = expr RPAREN
     { ExprNode (Sample (Distr1 (DExponential, rate))) }
-  | BETA LPAREN alpha = app_expr COMMA beta = app_expr RPAREN
+  | BETA LPAREN alpha = expr COMMA beta = expr RPAREN
     { ExprNode (Sample (Distr2 (DBeta, alpha, beta))) }
-  | LOGNORMAL LPAREN mu = app_expr COMMA sigma = app_expr RPAREN
+  | LOGNORMAL LPAREN mu = expr COMMA sigma = expr RPAREN
     { ExprNode (Sample (Distr2 (DLogNormal, mu, sigma))) }
-  | GAMMA LPAREN shape = app_expr COMMA scale = app_expr RPAREN
+  | GAMMA LPAREN shape = expr COMMA scale = expr RPAREN
     { ExprNode (Sample (Distr2 (DGamma, shape, scale))) }
-  | LAPLACE LPAREN scale = app_expr RPAREN
+  | LAPLACE LPAREN scale = expr RPAREN
     { ExprNode (Sample (Distr1 (DLaplace, scale))) }
-  | CAUCHY LPAREN scale = app_expr RPAREN
+  | CAUCHY LPAREN scale = expr RPAREN
     { ExprNode (Sample (Distr1 (DCauchy, scale))) }
-  | WEIBULL LPAREN a = app_expr COMMA b = app_expr RPAREN
+  | WEIBULL LPAREN a = expr COMMA b = expr RPAREN
     { ExprNode (Sample (Distr2 (DWeibull, a, b))) }
-  | TDIST LPAREN nu = app_expr RPAREN
+  | TDIST LPAREN nu = expr RPAREN
     { ExprNode (Sample (Distr1 (DTDist, nu))) }
-  | CHI2 LPAREN nu = app_expr RPAREN
+  | CHI2 LPAREN nu = expr RPAREN
     { ExprNode (Sample (Distr1 (DChi2, nu))) }
-  | LOGISTIC LPAREN scale = app_expr RPAREN
+  | LOGISTIC LPAREN scale = expr RPAREN
     { ExprNode (Sample (Distr1 (DLogistic, scale))) }
-  | RAYLEIGH LPAREN sigma = app_expr RPAREN
+  | RAYLEIGH LPAREN sigma = expr RPAREN
     { ExprNode (Sample (Distr1 (DRayleigh, sigma))) }
-  | PARETO LPAREN xm = app_expr COMMA alpha = app_expr RPAREN
+  | PARETO LPAREN xm = expr COMMA alpha = expr RPAREN
     { ExprNode (Sample (Distr2 (DPareto, xm, alpha))) }
-  | GUMBELONE LPAREN mu = app_expr COMMA beta_param = app_expr RPAREN
+  | GUMBELONE LPAREN mu = expr COMMA beta_param = expr RPAREN
     { ExprNode (Sample (Distr2 (DGumbel1, mu, beta_param))) }
-  | GUMBELTWO LPAREN mu = app_expr COMMA beta_param = app_expr RPAREN
+  | GUMBELTWO LPAREN mu = expr COMMA beta_param = expr RPAREN
     { ExprNode (Sample (Distr2 (DGumbel2, mu, beta_param))) }
-  | EXPPOW LPAREN arg1 = app_expr COMMA arg2 = app_expr RPAREN
+  | EXPPOW LPAREN arg1 = expr COMMA arg2 = expr RPAREN
     { ExprNode (Sample (Distr2 (DExppow, arg1, arg2))) }
-  | POISSON LPAREN mu = app_expr RPAREN
+  | POISSON LPAREN mu = expr RPAREN
     { ExprNode (Sample (Distr1 (DPoisson, mu))) }
-  | BINOMIAL LPAREN arg1 = app_expr COMMA arg2 = app_expr RPAREN
+  | BINOMIAL LPAREN arg1 = expr COMMA arg2 = expr RPAREN
     { ExprNode (Sample (Distr2 (DBinomial, arg1, arg2))) }
   | LPAREN RPAREN { ExprNode Unit } 
   | LPAREN el = expr_comma_list RPAREN (* New rule for (e1), (e1,e2), (e1,e2,e3), etc. *)

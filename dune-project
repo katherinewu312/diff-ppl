@@ -9,12 +9,11 @@
 
 (package
  (name diff_ppl)
- (synopsis "Transformation-only clone of Slice")
- (description "Parser, type inference, and discretization passes from Slice without backend emitters")
+ (synopsis "Symbolic execution of higher-order probabilistic programs")
+ (description "Bounded symbolic operational semantics for Slice programs")
  (depends
-  (ocaml (>= 4.08))
+  (ocaml (>= 4.13))
   (dune (>= 3.11))
   (menhir (>= 20201216))
-  (gsl (>= 1.25))
   (ounit2 (>= 2.2.6)))
  (tags ("probabilistic-programming" "discretization" "ocaml")))
