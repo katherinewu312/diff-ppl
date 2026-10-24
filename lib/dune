@@ -1,7 +1,7 @@
 (library
  (name slice)
  (public_name diff_ppl.slice)
- (modules ast lexer parser parse symbolic execute report))
+ (modules symbolic distribution ast lexer parser parse value path execute report))
 
 (ocamllex lexer)
 

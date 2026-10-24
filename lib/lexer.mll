@@ -19,30 +19,21 @@ let next_line lexbuf =
   }
 
 let keywords = [
-  ("let", LET);
-  ("in", IN);
-  ("if", IF);
-  ("then", THEN);
-  ("else", ELSE);
-  ("uniform", UNIFORM);
-  ("gaussian", GAUSSIAN);
-  ("exponential", EXPONENTIAL);
-  ("beta", BETA);
-  ("discrete", DISCRETE);
-  ("fst", FST);
-  ("snd", SND);
-  ("fun", FUN);
-  ("lognormal", LOGNORMAL);
-  ("fix", FIX);
-  ("nil", NIL);
-  ("match", MATCH);
-  ("with", WITH);
-  ("end", END);
-  ("ref", REF);
+  "let", LET; "in", IN; "if", IF; "then", THEN; "else", ELSE;
+  "true", TRUE; "false", FALSE; "not", NOT; "observe", OBSERVE;
+  "fst", FST; "snd", SND; "fun", FUN; "fix", FIX;
+  "nil", NIL; "match", MATCH; "with", WITH; "end", END; "ref", REF;
 ]
+
+let identifier s =
+  match List.assoc_opt s keywords with
+  | Some token -> token
+  | None ->
+      match Distribution.of_name s with
+      | Some d -> DIST d
+      | None -> IDENT s
 }
 
-let white = [' ' '\t' '\n' '\r']+
 let digit = ['0'-'9']
 let int = digit+
 let float = digit+ ('.' digit*)? (['e' 'E'] ['+' '-']? digit+)?
@@ -50,34 +41,13 @@ let lower = ['a'-'z']
 let upper = ['A'-'Z']
 let alpha = lower | upper | '_'
 let ident = alpha (alpha | digit)*
-let comment = "(*" [^ '*']* "*)" | "(*" [^ '*']* "*" ([^ ')'] [^ '*']* "*")* ")"
 
 rule token = parse
   | [' ' '\t' '\r']+ { token lexbuf }
   | '\n'      { next_line lexbuf; token lexbuf }
   | "(*"      { comment lexbuf; token lexbuf }
-  | "let"     { LET }
-  | "in"      { IN }
-  | "if"      { IF }
-  | "then"    { THEN }
-  | "else"    { ELSE }
-  | "true"    { TRUE }
-  | "false"   { FALSE }
   | "&&"      { AND }
   | "||"      { OR }
-  | "not"     { NOT }
-  | "observe" { OBSERVE }
-  | "uniform" { UNIFORM }
-  | "gaussian" { GAUSSIAN }
-  | "normal"  { GAUSSIAN }  (* Alias for gaussian *)
-  | "exponential" { EXPONENTIAL }
-  | "beta"    { BETA }
-  | "lognormal" { LOGNORMAL }
-  | "discrete" { DISCRETE }
-  | "flip"    { FLIP }
-  | "fst"     { FST }
-  | "snd"     { SND }
-  | "fun"     { FUN }
   | "->"      { ARROW }
   | '<'       { LESS }
   | "<="      { LESSEQ }
@@ -87,26 +57,11 @@ rule token = parse
   | '('       { LPAREN }
   | ')'       { RPAREN }
   | ','       { COMMA }
-  | ':'       { COLON }
   | ":="      { COLON_EQUAL }
   | ";"       { SEMICOLON }
   | "::"      { CONS }
   | "|"       { BAR }
   | '!'       { BANG }
-  | "gamma"   { GAMMA }
-  | "laplace" { LAPLACE }
-  | "cauchy"  { CAUCHY }
-  | "weibull" { WEIBULL }
-  | "tdist"   { TDIST }
-  | "chi2"    { CHI2 }
-  | "logistic" { LOGISTIC }
-  | "rayleigh" { RAYLEIGH }
-  | "pareto" { PARETO }
-  | "gumbel1" { GUMBELONE }
-  | "gumbel2" { GUMBELTWO }
-  | "exppow" { EXPPOW }
-  | "poisson" { POISSON }
-  | "binomial" { BINOMIAL }
   | '+'       { PLUS }
   | '-'       { MINUS }
   | '*'       { TIMES }
@@ -115,7 +70,7 @@ rule token = parse
                  with _ -> error lexbuf (Printf.sprintf "Invalid integer literal: %s" i) }
   | float as f { try FLOAT (float_of_string f)
                  with _ -> error lexbuf (Printf.sprintf "Invalid float literal: %s" f) }
-  | ident as s { try List.assoc s keywords with Not_found -> IDENT s }
+  | ident as s { identifier s }
   | "<=" "#"   { LEQ_HASH }
   | "<" "#"    { LT_HASH }
   | ">=" "#"   { GEQ_HASH }

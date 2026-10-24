@@ -29,6 +29,10 @@ let binary op a b =
   | Div, x, Number 1. -> x
   | _ -> Binary (op,a,b)
 
+let is_integer = function
+  | Number n -> Boolean (Float.is_integer n)
+  | t -> Is_integer t
+
 let op_string = function
   | Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/"
   | Lt -> "<" | Le -> "<=" | Eq -> "="

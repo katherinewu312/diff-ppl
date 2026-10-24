@@ -14,8 +14,6 @@ let () =
     | _ -> raise (Arg.Bad "Expected NAME=NUMBER")
   in
   let options = [
-    "--max-recursion",Arg.Int (fun n -> config := {!config with max_recursion=n}),
-      "N Maximum nested fix applications per path (default 32)";
     "--max-steps",Arg.Int (fun n -> config := {!config with max_steps=n}),
       "N Maximum expression evaluations per path (default 10000)";
     "--max-paths",Arg.Int (fun n -> config := {!config with max_paths=n}),
