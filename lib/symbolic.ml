@@ -64,3 +64,11 @@ let is_boolean = function
 let finite_number = function
   | Number n -> (match classify_float n with FP_nan | FP_infinite -> false | _ -> true)
   | _ -> true
+
+(** Replace [Sample id] by [value], re-simplifying on the way up. *)
+let rec substitute id value = function
+  | Sample k when k=id -> value
+  | Binary (op,a,b) -> binary op (substitute id value a) (substitute id value b)
+  | Not t -> negate (substitute id value t)
+  | Is_integer t -> is_integer (substitute id value t)
+  | t -> t

@@ -3,10 +3,8 @@ module S = Symbolic
 
 type t =
   | Bernoulli | Categorical
-  | Uniform | Gaussian | Beta | Lognormal | Gamma | Pareto | Weibull
-  | Gumbel1 | Gumbel2 | Exppow | Binomial
-  | Exponential | Laplace | Cauchy | Tdist | Chi2 | Logistic | Rayleigh
-  | Poisson
+  | Uniform | Gaussian | Beta | Gamma | Exponential
+  | Binomial | Poisson
 
 (** What a parameter must satisfy; checked as path requirements. *)
 type domain = Real | Positive | Nonnegative | Probability | Natural
@@ -19,29 +17,23 @@ type signature =
 let name = function
   | Bernoulli -> "flip" | Categorical -> "discrete"
   | Uniform -> "uniform" | Gaussian -> "gaussian" | Beta -> "beta"
-  | Lognormal -> "lognormal" | Gamma -> "gamma" | Pareto -> "pareto"
-  | Weibull -> "weibull" | Gumbel1 -> "gumbel1" | Gumbel2 -> "gumbel2"
-  | Exppow -> "exppow" | Binomial -> "binomial"
-  | Exponential -> "exponential" | Laplace -> "laplace" | Cauchy -> "cauchy"
-  | Tdist -> "tdist" | Chi2 -> "chi2" | Logistic -> "logistic"
-  | Rayleigh -> "rayleigh" | Poisson -> "poisson"
+  | Gamma -> "gamma" | Exponential -> "exponential"
+  | Binomial -> "binomial" | Poisson -> "poisson"
 
 let signature = function
   | Bernoulli -> Fixed [Probability]
   | Categorical -> Repeated Probability
   | Uniform -> Fixed [Real; Real]
-  | Gaussian | Lognormal | Gumbel1 | Gumbel2 -> Fixed [Real; Positive]
-  | Beta | Gamma | Pareto | Weibull | Exppow -> Fixed [Positive; Positive]
+  | Gaussian -> Fixed [Real; Positive]
+  | Beta | Gamma -> Fixed [Positive; Positive]
   | Binomial -> Fixed [Probability; Natural]
-  | Exponential | Laplace | Cauchy | Tdist | Chi2 | Logistic | Rayleigh ->
-      Fixed [Positive]
+  | Exponential -> Fixed [Positive]
   | Poisson -> Fixed [Nonnegative]
 
 (** Every constructor, for name lookup. *)
 let all = [
-  Bernoulli; Categorical; Uniform; Gaussian; Beta; Lognormal; Gamma; Pareto;
-  Weibull; Gumbel1; Gumbel2; Exppow; Binomial; Exponential; Laplace; Cauchy;
-  Tdist; Chi2; Logistic; Rayleigh; Poisson;
+  Bernoulli; Categorical; Uniform; Gaussian; Beta; Gamma; Exponential;
+  Binomial; Poisson;
 ]
 let aliases = ["normal", Gaussian]
 
@@ -89,6 +81,11 @@ let outcomes d params =
       let n = List.length ps in
       Some (List.mapi (fun i p -> S.Finite (i, n), p) ps)
   | _ -> None
+
+(** Distributions over the integers, other than those with finite [outcomes]. *)
+let integer_valued = function
+  | Poisson | Binomial -> true
+  | Bernoulli | Categorical | Uniform | Gaussian | Beta | Gamma | Exponential -> false
 
 (** A draw known to equal a single term. *)
 let point_mass d params =

@@ -4,6 +4,28 @@ module S = Symbolic
 let terms ts = String.concat ", " (List.map S.to_string ts)
 let sample s = Distribution.name s.distribution ^ "(" ^ terms s.parameters ^ ")"
 
+(** A path's probability, evaluated numerically once it has no parameters. *)
+type probability =
+  | Exact of Integration.Expr.t * float option
+  | Unsupported of string
+
+let probability s =
+  let open Integration in
+  match Integrate.probability s with
+  | exception Integrate.Unsupported msg -> Unsupported msg
+  | e when Expr.parameters [] e <> [] -> Exact (e, None)
+  | e ->
+      (match Numeric.value e with
+       | v -> Exact (e, Some v)
+       | exception Gsl.Error.Gsl_exn (_,msg) -> Unsupported ("numerical integration failed: " ^ msg))
+
+let show_probability = function
+  | Exact (e, Some v) when Integration.Expr.has_integral e ->
+      Integration.Expr.number v ^ " (numerical integration)"
+  | Exact (_, Some v) -> Integration.Expr.number v
+  | Exact (e, None) -> Integration.Expr.to_string e
+  | Unsupported msg -> "unsupported (" ^ msg ^ ")"
+
 let status = function
   | Returned _ -> "returned"
   | Stopped (_,Rejected) -> "rejected"
@@ -15,7 +37,8 @@ let text (result : Execute.result) =
   let line fmt = Printf.bprintf buffer (fmt ^^ "\n") in
   line "Symbolic execution: %d paths (%s)" (List.length result.paths)
     (if result.complete then "complete exploration; feasibility not fully checked" else "INCOMPLETE");
-  List.iteri (fun i outcome ->
+  let probabilities = List.map (fun o -> probability (state o)) result.paths in
+  List.iteri (fun i (outcome,p) ->
     let s = state outcome in
     line "\nPath %d [%s]" (i+1) (status outcome);
     List.iter (fun x -> line "  sample#%d ~ %s" x.id (sample x)) s.samples;
@@ -28,8 +51,18 @@ let text (result : Execute.result) =
      | Stopped (_,Runtime_error msg) -> line "  error: %s" msg
      | Stopped (_,Rejected) -> line "  observation failed"
      | Stopped (_,Step_limit) -> line "  step bound reached; path was not discarded");
-    Store.iter (fun id v -> line "  ref#%d = %s" id (Value.to_string v)) s.store
-  ) result.paths;
+    Store.iter (fun id v -> line "  ref#%d = %s" id (Value.to_string v)) s.store;
+    line "  probability: %s" (show_probability p)
+  ) (List.combine result.paths probabilities);
+  let values = List.filter_map (function Exact (_,v) -> v | Unsupported _ -> None) probabilities in
+  if List.length values = List.length probabilities then begin
+    let sum ps = List.fold_left (fun acc (o,p) -> match p with
+      | Exact (_,Some v) when status o <> "rejected" -> acc +. v | _ -> acc) 0. ps in
+    let paired = List.combine result.paths probabilities in
+    line "\nTotal probability: %s" (Integration.Expr.number (List.fold_left (+.) 0. values));
+    if List.exists (fun o -> status o = "rejected") result.paths then
+      line "Probability of not being rejected: %s" (Integration.Expr.number (sum paired))
+  end;
   Buffer.contents buffer
 
 (* JSON contains structured scalar terms and distributions, so future layers do not
@@ -69,12 +102,50 @@ let json_sample s =
   object_ ["id",string_of_int s.id;"distribution",quote (Distribution.name s.distribution);
     "parameters",array term s.parameters]
 
+let rec expr e =
+  let open Integration.Expr in
+  let node kind fields = object_ (("kind",quote kind) :: fields) in
+  let op name a b = node name ["left",expr a;"right",expr b] in
+  let fn name a = node name ["operand",expr a] in
+  match e with
+  | Const c -> node "number" ["value",number c]
+  | Param p -> node "parameter" ["name",quote p]
+  | Var k -> node "sample" ["id",string_of_int k]
+  | Add (a,b) -> op "add" a b | Sub (a,b) -> op "sub" a b
+  | Mul (a,b) -> op "mul" a b | Div (a,b) -> op "div" a b
+  | Min (a,b) -> op "min" a b | Max (a,b) -> op "max" a b
+  | Exp a -> fn "exp" a | Erf a -> fn "erf" a | Ceil a -> fn "ceil" a
+  | Indicator c -> node "indicator" ["condition",condition c]
+  | Cdf (d,ps,x) ->
+      node "cdf" ["distribution",quote (Distribution.name d);"parameters",array expr ps;"at",expr x]
+  | Integral i ->
+      let bound = function None -> "null" | Some e -> expr e in
+      node "integral" ["sample",string_of_int i.var;
+        "distribution",quote (Distribution.name i.distribution);
+        "parameters",array expr i.parameters;
+        "lower",bound i.lower;"upper",bound i.upper;"body",expr i.body]
+and condition c =
+  let open Integration.Expr in
+  match c with
+  | Compare (op,a,b) ->
+      object_ ["kind",quote (match op with Lt -> "lt" | Le -> "le" | Eq -> "eq");
+        "left",expr a;"right",expr b]
+  | Not c -> object_ ["kind",quote "not";"operand",condition c]
+  | Bool_param p -> object_ ["kind",quote "parameter";"name",quote p]
+
+let json_probability = function
+  | Exact (e,v) ->
+      object_ ["expression",expr e;"display",quote (Integration.Expr.to_string e);
+        "value",(match v with Some v -> Integration.Expr.number v | None -> "null")]
+  | Unsupported msg -> object_ ["error",quote msg]
+
 let json_path o =
   let s = state o in
   object_ (["status",quote (status o);
     "constraints",array term s.constraints;"observations",array term s.observations;
     "requirements",array term s.requirements;"samples",array json_sample s.samples;
-    "store",array (fun (id,v) -> object_ ["id",string_of_int id;"value",json_value v]) (Store.bindings s.store)] @
+    "store",array (fun (id,v) -> object_ ["id",string_of_int id;"value",json_value v]) (Store.bindings s.store);
+    "probability",json_probability (probability s)] @
     match o with
     | Returned (_,v) -> ["return",json_value v]
     | Stopped (_,Runtime_error msg) -> ["error",quote msg]
