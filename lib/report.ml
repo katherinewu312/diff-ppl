@@ -31,7 +31,20 @@ let text report =
     line "     %s: %s" (Solver.status b.answer) (match b.answer with
       | Solver.Unsat -> "dropped" | Sat -> "retained"
       | Unknown reason -> "retained (" ^ reason ^ ")")) report.checked;
-  line "\nRetained boundaries B*: %d" (List.length (retained report));
+  let boundaries=retained report in
+  line "\nRetained boundaries B*: %d" (List.length boundaries);
+  if boundaries=[] then line "  (none)";
+  List.iteri (fun i b ->
+    line "  %d. %s = 0 [%s]" (i+1) (S.to_string b.boundary.guard) (Solver.status b.answer);
+    line "     path: %s" (S.to_string b.boundary.path);
+    (match b.minus,b.plus with
+     | Some minus,Some plus ->
+         line "     output on g < 0: %s" (S.to_string minus);
+         line "     output on g > 0: %s" (S.to_string plus)
+     | _ -> line "     final-output sides: unresolved");
+    match b.answer with
+    | Solver.Unknown reason -> line "     unconfirmed candidate: %s" reason
+    | _ -> ()) boundaries;
   Buffer.contents buffer
 
 let quote s =
