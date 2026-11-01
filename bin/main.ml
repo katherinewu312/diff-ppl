@@ -13,7 +13,7 @@ let () =
     "--at",Arg.String assignment," NAME=NUMBER Supply a concrete input instead of a symbolic parameter";
     "--solver-timeout-ms",Arg.Set_int timeout," N Z3 timeout per query (default 1000)";
   ] in
-  let usage="Usage: diff_ppl [OPTIONS] FILE.slice\nAnalyze the rules in tex/main.tex; Z3 checks reachability and boundary candidates." in
+  let usage="Usage: diff_ppl [OPTIONS] FILE.ppl\nAnalyze the rules in tex/main.tex; Z3 checks reachability and boundary candidates." in
   Arg.parse options (fun name -> match !filename with
     | None -> filename:=Some name | Some _ -> raise (Arg.Bad "Expected one program file")) usage;
   try

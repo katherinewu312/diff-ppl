@@ -10,25 +10,25 @@ opam install . --deps-only --with-test
 eval "$(opam env)"
 dune build
 dune runtest
-dune exec diff_ppl -- examples/symbolic/threshold.slice
+dune exec diff_ppl -- examples/symbolic/threshold.ppl
 ```
 
 For your own file:
 
 ```sh
-dune exec diff_ppl -- YOUR_PROGRAM.slice
+dune exec diff_ppl -- YOUR_PROGRAM.ppl
 ```
 
 Pass in an assignment:
 
 ```sh
-dune exec diff_ppl -- --at theta=0.5 YOUR_PROGRAM.slice
+dune exec diff_ppl -- --at theta=0.5 YOUR_PROGRAM.ppl
 ```
 
 Z3 has a timeout for each query (default 1000 milliseconds):
 
 ```sh
-dune exec diff_ppl -- --solver-timeout-ms 2000 YOUR_PROGRAM.slice
+dune exec diff_ppl -- --solver-timeout-ms 2000 YOUR_PROGRAM.ppl
 ```
 
 NOTE: program must return some real value.
