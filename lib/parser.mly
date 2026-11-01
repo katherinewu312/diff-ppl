@@ -7,17 +7,18 @@ let rec tuple = function
   | [] -> assert false
 
 let sample d args =
-  if not (Distribution.accepts d (List.length args)) then
-    failwith (Printf.sprintf "%s does not take %d parameter(s)"
-      (Distribution.name d) (List.length args));
+  (match d with
+   | Uniform | Gaussian when List.length args <> 2 ->
+       failwith (Printf.sprintf "%s requires two parameters" (distribution_name d))
+   | _ -> ());
   Sample (d, args)
 %}
 
 %token <string> IDENT
-%token <float> FLOAT
+%token <string> FLOAT
 %token <int> INT
-%token <Distribution.t> DIST
-%token LET IN
+%token <Ast.distribution> DIST
+%token LET REC IN
 %token IF THEN ELSE
 %token TRUE FALSE
 %token AND OR NOT
@@ -46,7 +47,7 @@ let sample d args =
 %type <Ast.expr> expr assign_expr cons_expr cmp_expr app_expr atomic_expr prefix_expr
 %type <Ast.expr list> expr_comma_list (* New type for list of expressions *)
 %type <unit> opt_bar
-%type <float> number
+%type <string> number
 %type <Ast.expr> arith_expr mul_expr
 
 %left ARROW
@@ -63,6 +64,8 @@ expr:
     { Seq ($1, $3) }
   | LET x = IDENT EQUAL e1 = expr IN e2 = expr
     { Let (x, e1, e2) }
+  | LET REC f = IDENT EQUAL FUN x = IDENT ARROW body = expr IN rest = expr
+    { Let (f, Fix (f, x, body), rest) }
   | IF cond = expr THEN e1 = expr ELSE e2 = expr
     { If (cond, e1, e2) }
   | FUN x = IDENT ARROW e = expr
@@ -140,7 +143,7 @@ cons_expr:
 
 /* Prefix operators level */
 prefix_expr:                  (* New level for prefix ops like ! and ref *)
-  | MINUS prefix_expr         { Arith (Sub, Const 0., $2) }
+  | MINUS prefix_expr         { Arith (Sub, Const "0", $2) }
   | BANG prefix_expr          { Deref $2 }
   | REF prefix_expr           { Ref $2 }
   | app_expr { $1 }           /* Fallthrough to app_expr */
@@ -178,7 +181,7 @@ opt_bar:
 
 number:
   | f = FLOAT { f }
-  | i = INT   { float_of_int i }
+  | i = INT   { string_of_int i }
   ;
 
 expr_comma_list: (* Definition for comma-separated list of expressions *)

@@ -19,7 +19,7 @@ let next_line lexbuf =
   }
 
 let keywords = [
-  "let", LET; "in", IN; "if", IF; "then", THEN; "else", ELSE;
+  "let", LET; "rec", REC; "in", IN; "if", IF; "then", THEN; "else", ELSE;
   "true", TRUE; "false", FALSE; "not", NOT; "observe", OBSERVE;
   "fst", FST; "snd", SND; "fun", FUN; "fix", FIX;
   "nil", NIL; "match", MATCH; "with", WITH; "end", END; "ref", REF;
@@ -29,7 +29,7 @@ let identifier s =
   match List.assoc_opt s keywords with
   | Some token -> token
   | None ->
-      match Distribution.of_name s with
+      match Ast.distribution_of_name s with
       | Some d -> DIST d
       | None -> IDENT s
 }
@@ -68,8 +68,7 @@ rule token = parse
   | '/'       { DIVIDE }
   | int as i   { try INT (int_of_string i)
                  with _ -> error lexbuf (Printf.sprintf "Invalid integer literal: %s" i) }
-  | float as f { try FLOAT (float_of_string f)
-                 with _ -> error lexbuf (Printf.sprintf "Invalid float literal: %s" f) }
+  | float as f { FLOAT f }
   | ident as s { identifier s }
   | "<=" "#"   { LEQ_HASH }
   | "<" "#"    { LT_HASH }

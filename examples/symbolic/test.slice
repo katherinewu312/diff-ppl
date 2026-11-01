@@ -1,0 +1,6 @@
+let u = uniform(0,1) in
+let f =
+  if u < theta then (fun x -> x + 1)
+               else (fun x -> x + 2)
+in
+f 0

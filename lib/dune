@@ -1,9 +1,7 @@
 (library
  (name slice)
  (public_name diff_ppl.slice)
- (libraries gsl))
-
-(include_subdirs qualified)
+ (libraries unix))
 
 (ocamllex lexer)
 

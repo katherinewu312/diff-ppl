@@ -1,4 +1,4 @@
-let sum = fix sum xs :=
+let rec sum = fun xs ->
   match xs with
   | nil -> 0
   | x :: rest -> x + sum rest

@@ -1,4 +1,4 @@
-(tests
- (names test_symbolic)
- (libraries diff_ppl.slice ounit2)
- )
+(test
+ (name test_analysis)
+ (modules test_analysis)
+ (libraries diff_ppl.slice ounit2))

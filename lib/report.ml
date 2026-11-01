@@ -1,155 +1,82 @@
-open Path
 module S = Symbolic
+type checked = { boundary : S.boundary; minus : S.t option; plus : S.t option; answer : Solver.answer }
+type t = { analysis : Execute.result; checked : checked list }
 
-let terms ts = String.concat ", " (List.map S.to_string ts)
-let sample s = Distribution.name s.distribution ^ "(" ^ terms s.parameters ^ ")"
+let check solver analysis =
+  let checked=List.map (fun boundary ->
+    let result=Solver.boundary solver analysis.Execute.samples ~value:analysis.value boundary in
+    {boundary;minus=result.minus;plus=result.plus;answer=result.answer}) analysis.candidates in
+  {analysis;checked}
 
-(** A path's probability, evaluated numerically once it has no parameters. *)
-type probability =
-  | Exact of Integration.Expr.t * float option
-  | Unsupported of string
+let retained report = List.filter (fun b -> b.answer<>Solver.Unsat) report.checked
+let tuple (b:S.boundary) = Printf.sprintf "(%s; %s; %s; %s)"
+  (S.to_string b.path) (S.to_string b.guard) (S.to_string b.minus) (S.to_string b.plus)
 
-let probability s =
-  let open Integration in
-  match Integrate.probability s with
-  | exception Integrate.Unsupported msg -> Unsupported msg
-  | e when Expr.parameters [] e <> [] -> Exact (e, None)
-  | e ->
-      (match Numeric.value e with
-       | v -> Exact (e, Some v)
-       | exception Gsl.Error.Gsl_exn (_,msg) -> Unsupported ("numerical integration failed: " ^ msg))
-
-let show_probability = function
-  | Exact (e, Some v) when Integration.Expr.has_integral e ->
-      Integration.Expr.number v ^ " (numerical integration)"
-  | Exact (_, Some v) -> Integration.Expr.number v
-  | Exact (e, None) -> Integration.Expr.to_string e
-  | Unsupported msg -> "unsupported (" ^ msg ^ ")"
-
-let status = function
-  | Returned _ -> "returned"
-  | Stopped (_,Rejected) -> "rejected"
-  | Stopped (_,Step_limit) -> "step_limit"
-  | Stopped (_,Runtime_error _) -> "runtime_error"
-
-let text (result : Execute.result) =
-  let buffer = Buffer.create 1024 in
-  let line fmt = Printf.bprintf buffer (fmt ^^ "\n") in
-  line "Symbolic execution: %d paths (%s)" (List.length result.paths)
-    (if result.complete then "complete exploration; feasibility not fully checked" else "INCOMPLETE");
-  let probabilities = List.map (fun o -> probability (state o)) result.paths in
-  List.iteri (fun i (outcome,p) ->
-    let s = state outcome in
-    line "\nPath %d [%s]" (i+1) (status outcome);
-    List.iter (fun x -> line "  sample#%d ~ %s" x.id (sample x)) s.samples;
-    line "  condition: %s" (if s.constraints=[] then "true" else
-      String.concat " && " (List.map S.to_string s.constraints));
-    List.iter (fun term -> line "  observe: %s" (S.to_string term)) s.observations;
-    List.iter (fun term -> line "  requires: %s" (S.to_string term)) s.requirements;
-    (match outcome with
-     | Returned (_,v) -> line "  return: %s" (Value.to_string v)
-     | Stopped (_,Runtime_error msg) -> line "  error: %s" msg
-     | Stopped (_,Rejected) -> line "  observation failed"
-     | Stopped (_,Step_limit) -> line "  step bound reached; path was not discarded");
-    Store.iter (fun id v -> line "  ref#%d = %s" id (Value.to_string v)) s.store;
-    line "  probability: %s" (show_probability p)
-  ) (List.combine result.paths probabilities);
-  let values = List.filter_map (function Exact (_,v) -> v | Unsupported _ -> None) probabilities in
-  if List.length values = List.length probabilities then begin
-    let sum ps = List.fold_left (fun acc (o,p) -> match p with
-      | Exact (_,Some v) when status o <> "rejected" -> acc +. v | _ -> acc) 0. ps in
-    let paired = List.combine result.paths probabilities in
-    line "\nTotal probability: %s" (Integration.Expr.number (List.fold_left (+.) 0. values));
-    if List.exists (fun o -> status o = "rejected") result.paths then
-      line "Probability of not being rejected: %s" (Integration.Expr.number (sum paired))
-  end;
+let text report =
+  let buffer=Buffer.create 1024 in
+  let line fmt=Printf.bprintf buffer (fmt ^^ "\n") in
+  line "Symbolic value: %s" (S.to_string report.analysis.value);
+  line "\nBase samples:";
+  List.iter (fun (s:S.sample) -> line "  s%d ~ %s" s.id (match s.distribution with
+    | Ast.Uniform -> "Uniform(0, 1), 0 < s < 1"
+    | Gaussian -> "Gaussian(0, 1), s in R"
+    | Unsupported_distribution _ -> assert false)) report.analysis.samples;
+  line "\nCandidate boundaries B: %d" (List.length report.checked);
+  line "  (path; guard; v_minus; v_plus), exactly as recorded by Rec";
+  List.iteri (fun i b ->
+    line "  %d. %s" (i+1) (tuple b.boundary);
+    (match b.minus,b.plus with
+     | Some minus,Some plus -> line "     final-output sides: %s ; %s" (S.to_string minus) (S.to_string plus)
+     | _ -> line "     final-output sides: unresolved");
+    line "     %s: %s" (Solver.status b.answer) (match b.answer with
+      | Solver.Unsat -> "dropped" | Sat -> "retained"
+      | Unknown reason -> "retained (" ^ reason ^ ")")) report.checked;
+  line "\nRetained boundaries B*: %d" (List.length (retained report));
   Buffer.contents buffer
 
-(* JSON contains structured scalar terms and distributions, so future layers do not
-   have to parse pretty-printed constraints. Closures/stores remain diagnostic. *)
-let quote text =
-  let b = Buffer.create (String.length text+2) in
-  Buffer.add_char b '"';
+let quote s =
+  let b=Buffer.create (String.length s+2) in Buffer.add_char b '"';
   String.iter (function
     | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
-    | '\n' -> Buffer.add_string b "\\n" | '\r' -> Buffer.add_string b "\\r"
-    | '\t' -> Buffer.add_string b "\\t"
-    | c when Char.code c < 32 -> Buffer.add_string b (Printf.sprintf "\\u%04x" (Char.code c))
-    | c -> Buffer.add_char b c) text;
-  Buffer.add_char b '"'; Buffer.contents b
+    | '\n' -> Buffer.add_string b "\\n" | '\r' -> Buffer.add_string b "\\r" | '\t' -> Buffer.add_string b "\\t"
+    | c when Char.code c<32 -> Buffer.add_string b (Printf.sprintf "\\u%04x" (Char.code c))
+    | c -> Buffer.add_char b c) s;
+  Buffer.add_char b '"';Buffer.contents b
+let obj fields = "{" ^ String.concat "," (List.map (fun (k,v) -> quote k ^ ":" ^ v) fields) ^ "}"
 let array f xs = "[" ^ String.concat "," (List.map f xs) ^ "]"
-let object_ fields = "{" ^ String.concat "," (List.map (fun (k,v) -> quote k ^ ":" ^ v) fields) ^ "}"
-let rec term = function
-  | S.Number n -> object_ ["kind",quote "number";"value",Printf.sprintf "%.17g" n]
-  | S.Boolean b -> object_ ["kind",quote "boolean";"value",string_of_bool b]
-  | S.Parameter name -> object_ ["kind",quote "parameter";"name",quote name]
-  | S.Sample id -> object_ ["kind",quote "sample";"id",string_of_int id]
-  | S.Finite (k,n) -> object_ ["kind",quote "finite";"value",string_of_int k;"size",string_of_int n]
-  | S.Not t -> object_ ["kind",quote "not";"operand",term t]
-  | S.Is_integer t -> object_ ["kind",quote "is_integer";"operand",term t]
-  | S.Binary (op,a,b) -> object_ ["kind",quote "binary";"op",quote (S.op_string op);"left",term a;"right",term b]
 
-let rec json_value = function
-  | Value.Scalar t -> term t
-  | Value.Pair (a,b) -> object_ ["kind",quote "pair";"first",json_value a;"second",json_value b]
-  | Value.Cons (a,b) -> object_ ["kind",quote "cons";"head",json_value a;"tail",json_value b]
-  | Value.Nil -> object_ ["kind",quote "nil"]
-  | Value.Unit -> object_ ["kind",quote "unit"]
-  | Value.Location id -> object_ ["kind",quote "reference";"id",string_of_int id]
-  | Value.Closure _ as v -> object_ ["kind",quote "closure";"display",quote (Value.to_string v)]
+let rec value = function
+  | S.Number n -> obj ["kind",quote "number";"exact",quote (S.Rational.to_string n)]
+  | Boolean b -> obj ["kind",quote "boolean";"value",string_of_bool b]
+  | Parameter name -> obj ["kind",quote "parameter";"name",quote name]
+  | Sample id -> obj ["kind",quote "sample";"id",string_of_int id]
+  | Finite (i,n) -> obj ["kind",quote "finite";"value",string_of_int i;"size",string_of_int n]
+  | Unit -> obj ["kind",quote "unit"] | Nil -> obj ["kind",quote "nil"]
+  | Arith (op,a,b) -> binary "arithmetic" (S.arith_name op) a b
+  | Compare (op,a,b) -> binary "comparison" (S.compare_name op) a b
+  | Finite_compare (op,n,a,b) -> obj ["kind",quote "finite_comparison";"op",quote (S.compare_name op);
+      "size",string_of_int n;"left",value a;"right",value b]
+  | And (a,b) -> binary "boolean" "and" a b | Or (a,b) -> binary "boolean" "or" a b
+  | Not t -> obj ["kind",quote "not";"operand",value t]
+  | Ite (c,a,b) -> obj ["kind",quote "ite";"condition",value c;"then",value a;"else",value b]
+  | Pair (a,b) -> obj ["kind",quote "pair";"first",value a;"second",value b]
+  | Cons (a,b) -> obj ["kind",quote "cons";"head",value a;"tail",value b]
+  | Closure c -> obj ["kind",quote "closure";"parameter",quote c.param;
+      "self",(match c.self with None -> "null" | Some name -> quote name);
+      "body",quote (Ast.to_string c.body);
+      "environment",array (fun (name,v) -> obj ["name",quote name;"value",value v]) c.env]
+and binary kind op a b = obj ["kind",quote kind;"op",quote op;"left",value a;"right",value b]
 
-let json_sample s =
-  object_ ["id",string_of_int s.id;"distribution",quote (Distribution.name s.distribution);
-    "parameters",array term s.parameters]
+let boundary b =
+  obj (["path",value b.boundary.path;"guard",value b.boundary.guard;
+    "local_minus",value b.boundary.minus;"local_plus",value b.boundary.plus;
+    "minus",(match b.minus with None -> "null" | Some v -> value v);
+    "plus",(match b.plus with None -> "null" | Some v -> value v);
+    "solver",quote (Solver.status b.answer);"retained",string_of_bool (b.answer<>Solver.Unsat)] @
+    match b.answer with Solver.Unknown reason -> ["reason",quote reason] | _ -> [])
 
-let rec expr e =
-  let open Integration.Expr in
-  let node kind fields = object_ (("kind",quote kind) :: fields) in
-  let op name a b = node name ["left",expr a;"right",expr b] in
-  let fn name a = node name ["operand",expr a] in
-  match e with
-  | Const c -> node "number" ["value",number c]
-  | Param p -> node "parameter" ["name",quote p]
-  | Var k -> node "sample" ["id",string_of_int k]
-  | Add (a,b) -> op "add" a b | Sub (a,b) -> op "sub" a b
-  | Mul (a,b) -> op "mul" a b | Div (a,b) -> op "div" a b
-  | Min (a,b) -> op "min" a b | Max (a,b) -> op "max" a b
-  | Exp a -> fn "exp" a | Erf a -> fn "erf" a | Ceil a -> fn "ceil" a
-  | Indicator c -> node "indicator" ["condition",condition c]
-  | Cdf (d,ps,x) ->
-      node "cdf" ["distribution",quote (Distribution.name d);"parameters",array expr ps;"at",expr x]
-  | Integral i ->
-      let bound = function None -> "null" | Some e -> expr e in
-      node "integral" ["sample",string_of_int i.var;
-        "distribution",quote (Distribution.name i.distribution);
-        "parameters",array expr i.parameters;
-        "lower",bound i.lower;"upper",bound i.upper;"body",expr i.body]
-and condition c =
-  let open Integration.Expr in
-  match c with
-  | Compare (op,a,b) ->
-      object_ ["kind",quote (match op with Lt -> "lt" | Le -> "le" | Eq -> "eq");
-        "left",expr a;"right",expr b]
-  | Not c -> object_ ["kind",quote "not";"operand",condition c]
-  | Bool_param p -> object_ ["kind",quote "parameter";"name",quote p]
-
-let json_probability = function
-  | Exact (e,v) ->
-      object_ ["expression",expr e;"display",quote (Integration.Expr.to_string e);
-        "value",(match v with Some v -> Integration.Expr.number v | None -> "null")]
-  | Unsupported msg -> object_ ["error",quote msg]
-
-let json_path o =
-  let s = state o in
-  object_ (["status",quote (status o);
-    "constraints",array term s.constraints;"observations",array term s.observations;
-    "requirements",array term s.requirements;"samples",array json_sample s.samples;
-    "store",array (fun (id,v) -> object_ ["id",string_of_int id;"value",json_value v]) (Store.bindings s.store);
-    "probability",json_probability (probability s)] @
-    match o with
-    | Returned (_,v) -> ["return",json_value v]
-    | Stopped (_,Runtime_error msg) -> ["error",quote msg]
-    | Stopped _ -> [])
-
-let json (result : Execute.result) = object_ ["schema_version","1";"complete",string_of_bool result.complete;
-  "feasibility_checked","false";"paths",array json_path result.paths]
+let json report = obj ["schema_version","3";"value",value report.analysis.value;
+  "samples",array (fun (s:S.sample) -> obj ["id",string_of_int s.id;
+    "distribution",quote (Ast.distribution_name s.distribution)]) report.analysis.samples;
+  "candidates",array boundary report.checked;
+  "retained_count",string_of_int (List.length (retained report))]

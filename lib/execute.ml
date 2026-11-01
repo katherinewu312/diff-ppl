@@ -1,167 +1,125 @@
-(** Call-by-value symbolic execution, with a persistent store per path. This
-    implements the symbolic operational semantics; path bookkeeping lives in
-    [Path]. *)
+(** Literal implementation of the judgments in tex/main.tex, Section Analysis.
+    [eval] implements =>, [apply] implements the auxiliary downward arrow.
+    No path enumeration, probability integration, or AD is performed. *)
 open Ast
-open Path
 module S = Symbolic
 
-type config = { max_steps : int; max_paths : int }
-type result = { paths : Value.t outcome list; complete : bool }
+exception Error of string
+let error message = raise (Error message)
+type result = { value : S.t; candidates : S.boundary list; samples : S.sample list }
 
-let default_config = { max_steps = 10000; max_paths = 10000 }
-exception Path_limit = Path.Path_limit
-
-let arith = function Add -> S.Add | Sub -> S.Sub | Mul -> S.Mul | Div -> S.Div
-let comparison = function Lt -> S.Lt | Le -> S.Le | Eq -> S.Eq
-
-(* Coercions *)
-let scalar t = return (Value.Scalar t)
-let to_scalar = function Value.Scalar t -> return t | _ -> fail "Expected a scalar value"
-let to_number v =
-  let* t = to_scalar v in
-  if S.is_boolean t || (match t with S.Finite _ -> true | _ -> false)
-  then fail "Expected a numeric value" else return t
-let to_boolean v =
-  let* t = to_scalar v in
-  match t with
-  | S.Parameter _ -> return t
-  | _ when S.is_boolean t -> return t
-  | _ -> fail "Expected a Boolean condition"
-let to_finite n v =
-  let* t = to_scalar v in
-  match t with
-  | S.Finite (k,m) when m=n -> return k
-  | _ -> fail "Finite comparison has incompatible operands"
-
-let sample x d params =
-  let* id = draw x d params in
-  match Distribution.outcomes d params with
-  | None -> scalar (Option.value (Distribution.point_mass d params) ~default:(S.Sample id))
-  | Some outcomes ->
-      let possible = List.filter (fun (_,weight) -> weight <> S.Number 0.) outcomes in
-      let* v = fork x (List.map (fun (v,_) -> S.binary S.Eq (S.Sample id) v, v) possible) in
-      scalar v
-
-let rec eval x env expression =
-  let* () = tick x in
-  let eval_here = eval x env in
-  let number e = let* v = eval_here e in to_number v in
-  let boolean e = let* v = eval_here e in to_boolean v in
-  match expression with
-  | Var name -> return (Option.value (List.assoc_opt name env) ~default:(Value.Scalar (S.Parameter name)))
-  | Const n ->
-      if S.finite_number (S.Number n) then scalar (S.Number n) else fail "Non-finite literal"
-  | Bool b -> scalar (S.Boolean b)
-  | Unit -> return Value.Unit
-  | Nil -> return Value.Nil
-  | Finite (k,n) -> scalar (S.Finite (k,n))
-  | Arith (op,a,b) ->
-      let* a = number a in
-      let* b = number b in
-      let* () = if op=Div
-        then require "Division by zero" (S.negate (S.binary S.Eq b (S.Number 0.)))
-        else return () in
-      let t = S.binary (arith op) a b in
-      if S.finite_number t then scalar t else fail "Non-finite arithmetic result"
-  | Compare (op,a,b) ->
-      let* a = number a in
-      let* b = number b in
-      scalar (S.binary (comparison op) a b)
-  | Finite_compare (op,n,a,b) ->
-      let* a = let* v = eval_here a in to_finite n v in
-      let* b = let* v = eval_here b in to_finite n v in
-      scalar (S.Boolean (match op with Lt -> a<b | Le -> a<=b | Eq -> a=b))
-  | Not a -> let* c = boolean a in scalar (S.negate c)
-  | And (a,b) ->
-      let* c = boolean a in
-      let* yes = branch x c in
-      if yes then let* c = boolean b in scalar c else scalar (S.Boolean false)
-  | Or (a,b) ->
-      let* c = boolean a in
-      let* yes = branch x c in
-      if yes then scalar (S.Boolean true) else let* c = boolean b in scalar c
-  | If (c,a,b) ->
-      let* c = boolean c in
-      let* yes = branch x c in
-      eval_here (if yes then a else b)
-  | Let (name,a,b) -> let* v = eval_here a in eval x ((name,v)::env) b
-  | Fun (param,body) -> return (Value.Closure {self=None; param; body; env})
-  | Fix (self,param,body) -> return (Value.Closure {self=Some self; param; body; env})
-  | Apply (f,a) ->
-      let* f = eval_here f in
-      let* a = eval_here a in
-      (match f with
-       | Value.Closure c ->
-           let env = match c.self with Some name -> (name,f)::c.env | None -> c.env in
-           eval x ((c.param,a)::env) c.body
-       | _ -> fail "Application of a non-function")
-  | Pair (a,b) ->
-      let* a = eval_here a in
-      let* b = eval_here b in
-      return (Value.Pair (a,b))
-  | First e ->
-      let* v = eval_here e in
-      (match v with Value.Pair (a,_) -> return a | _ -> fail "fst expects a pair")
-  | Second e ->
-      let* v = eval_here e in
-      (match v with Value.Pair (_,b) -> return b | _ -> fail "snd expects a pair")
-  | Cons (a,b) ->
-      let* a = eval_here a in
-      let* b = eval_here b in
-      (match b with
-       | Value.Nil | Value.Cons _ -> return (Value.Cons (a,b))
-       | _ -> fail "List tail must be a list")
-  | Match_list (e,nil,head,tail,cons) ->
-      let* v = eval_here e in
-      (match v with
-       | Value.Nil -> eval_here nil
-       | Value.Cons (a,b) -> eval x ((head,a)::(tail,b)::env) cons
-       | _ -> fail "match expects a list")
-  | Ref e ->
-      let* v = eval_here e in
-      let* id = alloc v in
-      return (Value.Location id)
-  | Deref e ->
-      let* v = eval_here e in
-      (match v with Value.Location id -> read id | _ -> fail "Dereference expects a reference")
-  | Assign (a,b) ->
-      let* r = eval_here a in
-      let* v = eval_here b in
-      (match r with
-       | Value.Location id -> let* () = write id v in return Value.Unit
-       | _ -> fail "Assignment expects a reference")
-  | Seq (a,b) -> let* _ = eval_here a in eval_here b
-  | Sample (d,args) ->
-      let* params = all (List.map number args) in
-      sample x d params
-  | Observe e ->
-      let* c = boolean e in
-      let* () = observe c in
-      let* ok = branch x c in
-      if ok then return Value.Unit else stop Rejected
-
-(* Materialize returned Boolean queries too, not only branch conditions. *)
-let rec materialize x = function
-  | Value.Scalar t when S.is_boolean t ->
-      let* b = branch x t in scalar (S.Boolean b)
-  | Value.Pair (a,b) ->
-      let* a = materialize x a in
-      let* b = materialize x b in
-      return (Value.Pair (a,b))
-  | Value.Cons (a,b) ->
-      let* a = materialize x a in
-      let* b = materialize x b in
-      return (Value.Cons (a,b))
-  | v -> return v
-
-let run ?(config=default_config) ?(parameters=[]) expression =
-  if config.max_steps < 1 || config.max_paths < 1
-  then invalid_arg "Execution bounds must be positive";
-  let x = exploration ~max_steps:config.max_steps ~max_paths:config.max_paths in
-  let env = List.map (fun (name,n) ->
-    if not (S.finite_number (S.Number n)) then invalid_arg "Non-finite parameter";
-    name,Value.Scalar (S.Number n)) parameters in
-  let paths = (let* v = eval x env expression in materialize x v) Path.empty in
-  let complete = List.for_all (function
-    | Returned _ | Stopped (_,Rejected) -> true | _ -> false) paths
-  in {paths;complete}
+let run ?(parameters=[]) ~solver expression =
+  let samples=ref [] and next_sample=ref 1 in
+  let fresh distribution =
+    let id= !next_sample in incr next_sample;
+    samples := !samples @ [{S.id;distribution}]; S.Sample id
+  in
+  let entailed path condition =
+    match condition with
+    | S.Boolean b -> b
+    | _ -> Solver.entails solver !samples path condition
+  in
+  let ensure_feasible path = match path with
+    | S.Boolean true -> ()
+    | S.Boolean false -> error "No analysis rule for an infeasible incoming path"
+    | _ when Solver.query solver !samples path=Solver.Unsat ->
+        error "No analysis rule for an infeasible incoming path"
+    | _ -> ()
+  in
+  let numeric = function
+    | S.Boolean _ | Compare _ | Finite_compare _ | And _ | Or _ | Not _
+    | Closure _ | Pair _ | Cons _ | Nil | Unit | Finite _ -> error "Expected a numeric symbolic value"
+    | value -> value
+  in
+  let rec condition = function
+    | (S.Boolean _ | Parameter _ | Compare _ | Finite_compare _) as v -> v
+    | Not v -> S.negate (condition v)
+    | And (a,b) -> S.and_ (condition a) (condition b)
+    | Or (a,b) -> S.or_ (condition a) (condition b)
+    | _ -> error "The paper's condition grammar has no rule for this value (for example, an ite of Boolean values)"
+  in
+  let rec eval env path expression =
+    ensure_feasible path;
+    let here=eval env path in
+    let two a b combine =
+      let va,ba=here a in let vb,bb=here b in combine va vb,S.union ba bb in
+    match expression with
+    | Var x -> (match List.assoc_opt x env with
+        | Some v -> v,[] | None -> error ("Unbound variable " ^ x ^ "; declare free inputs with --param " ^ x))
+    | Const n -> S.number n,[] | Bool b -> S.Boolean b,[]
+    | Unit -> S.Unit,[] | Finite (i,n) -> S.Finite (i,n),[] | Nil -> S.Nil,[]
+    | Fun (param,body) -> S.Closure {env;self=None;param;body},[]
+    | Fix (self,param,body) -> S.Closure {env;self=Some self;param;body},[]
+    | Let (x,a,b) ->
+        let va,ba=here a in let vb,bb=eval ((x,va)::env) path b in vb,S.union ba bb
+    | Arith (op,a,b) -> two a b (fun a b -> S.arith op (numeric a) (numeric b))
+    | Compare (op,a,b) -> two a b (fun a b -> S.comparison op (numeric a) (numeric b))
+    | Finite_compare (op,n,a,b) -> two a b (S.finite_comparison op n)
+    (* The paper's operator rule is eager: both operands use the same pi. *)
+    | And (a,b) -> two a b (fun a b -> S.and_ (condition a) (condition b))
+    | Or (a,b) -> two a b (fun a b -> S.or_ (condition a) (condition b))
+    | Not a -> let v,b=here a in S.negate (condition v),b
+    | If (c,a,b) ->
+        let c,bc=here c in let c=condition c in
+        if entailed path c then let v,b=here a in v,S.union bc b
+        else if entailed path (S.negate c) then let v,b=here b in v,S.union bc b
+        else
+          let va,ba=eval env (S.and_ path c) a in
+          let vb,bb=eval env (S.and_ path (S.negate c)) b in
+          S.Ite (c,va,vb), S.union bc (S.union ba (S.union bb (S.record path c va vb)))
+    | Sample (Uniform,[a;b]) ->
+        let a,ba=here a in let b,bb=here b in
+        let a=numeric a and b=numeric b in let s=fresh Uniform in
+        S.arith Add a (S.arith Mul (S.arith Sub b a) s),S.union ba bb
+    | Sample (Gaussian,[mu;sigma]) ->
+        let mu,bm=here mu in let sigma,bs=here sigma in
+        let mu=numeric mu and sigma=numeric sigma in let s=fresh Gaussian in
+        S.arith Add mu (S.arith Mul sigma s),S.union bm bs
+    | Sample (d,_) -> error ("No sampling rule in main.tex for " ^ distribution_name d)
+    | Apply (f,a) ->
+        let f,bf=here f in let a,ba=here a in
+        let value,b=apply path f a in value,S.union bf (S.union ba b)
+    | Pair (a,b) -> two a b (fun a b -> S.Pair (a,b))
+    | Cons (a,b) -> two a b (fun a b -> S.Cons (a,b))
+    | First e -> let v,b=here e in let v,b'=project path true v in v,S.union b b'
+    | Second e -> let v,b=here e in let v,b'=project path false v in v,S.union b b'
+    | Match_list (e,nil,head,tail,cons) ->
+        let v,b=here e in let v,b'=match_list env path v nil head tail cons in v,S.union b b'
+    | Observe _ -> error "No observation rule is specified in main.tex"
+    | Ref _ | Deref _ | Assign _ | Seq _ -> error "No state or sequencing rules are specified in main.tex"
+  and apply path fn argument =
+    ensure_feasible path;
+    match fn with
+    | S.Closure c ->
+        let env=match c.self with None -> c.env | Some f -> (f,fn)::c.env in
+        eval ((c.param,argument)::env) path c.body
+    | Ite (c,a,b) ->
+        if entailed path c then apply path a argument
+        else if entailed path (S.negate c) then apply path b argument
+        else
+          let va,ba=apply (S.and_ path c) a argument in
+          let vb,bb=apply (S.and_ path (S.negate c)) b argument in
+          S.Ite (c,va,vb),S.union ba (S.union bb (S.record path c va vb))
+    | _ -> error "Application requires a closure or an ite of closures"
+  and project path first value =
+    ensure_feasible path;
+    match value with
+    | S.Pair (a,b) -> (if first then a else b),[]
+    | Ite (c,a,b) ->
+        let va,ba=project (S.and_ path c) first a in
+        let vb,bb=project (S.and_ path (S.negate c)) first b in
+        S.Ite (c,va,vb),S.union ba (S.union bb (S.record path c va vb))
+    | _ -> error "Projection requires a pair or an ite of pairs"
+  and match_list env path value nil head tail cons =
+    ensure_feasible path;
+    match value with
+    | S.Nil -> eval env path nil
+    | Cons (a,b) -> eval ((head,a)::(tail,b)::env) path cons
+    | Ite (c,a,b) ->
+        let va,ba=match_list env (S.and_ path c) a nil head tail cons in
+        let vb,bb=match_list env (S.and_ path (S.negate c)) b nil head tail cons in
+        S.Ite (c,va,vb),S.union ba (S.union bb (S.record path c va vb))
+    | _ -> error "match requires a list or an ite of lists"
+  in
+  let value,candidates=eval parameters S.truth expression in
+  {value;candidates;samples= !samples}
