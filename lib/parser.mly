@@ -51,13 +51,15 @@ prog: e = expr EOF { e };
 expr:
     LET x = IDENT EQUAL e1 = expr IN e2 = expr
     { Let (x, e1, e2) }
+  /* Sugar kept for old programs: let rec f = fun x -> e1 in e2
+     means let f = fix f x := e1 in e2. */
   | LET REC f = IDENT EQUAL FUN x = IDENT ARROW body = expr IN rest = expr
     { Let (f, Fix (f, x, body), rest) }
   | IF cond = expr THEN e1 = expr ELSE e2 = expr
     { If (cond, e1, e2) }
   | FUN x = IDENT ARROW e = expr
     { Fun (x, e) }
-  | FIX f = IDENT x = IDENT COLON_EQUAL e = expr 
+  | FIX f = IDENT x = IDENT COLON_EQUAL e = expr
     { Fix (f, x, e) }
   | MATCH e1 = expr WITH opt_bar NIL ARROW e_nil = expr BAR y = IDENT CONS ys = IDENT ARROW e_cons = expr END 
     { Match_list (e1, e_nil, y, ys, e_cons) } 

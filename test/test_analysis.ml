@@ -48,7 +48,7 @@ let tests = [
     assert_equal [sub (S.Sample 2) (S.Sample 1);sub (S.Sample 3) (S.Sample 1)]
       (List.map (fun (b:S.boundary) -> b.guard) r.analysis.candidates));
   "paper example 4: recursion reaches base case" >:: (fun _ ->
-    let r=analyze "let rec countdown=fun n -> if n<=0 then (if uniform(0,1)<theta then 0 else 1) else countdown (n-1) in countdown 2" in
+    let r=analyze "let countdown=fix countdown n := if n<=0 then (if uniform(0,1)<theta then 0 else 1) else countdown (n-1) in countdown 2" in
     assert_counts 1 1 r;
     assert_equal 1 (List.length r.analysis.samples));
   "constant true reachability skips undefined arithmetic" >:: (fun _ ->
@@ -84,13 +84,13 @@ let tests = [
     let r=analyze "let a=7 in let f=fun x -> x+a in let a=99 in f 2" in
     assert_value (n 9) r);
   "recursive closure restores self under shadowing" >:: (fun _ ->
-    let r=analyze "let rec f=fun n -> if n<=0 then 7 else f (n-1) in let g=f in let f=fun x -> 99 in g 3" in
+    let r=analyze "let f=fix f n := if n<=0 then 7 else f (n-1) in let g=f in let f=fun x -> 99 in g 3" in
     assert_value (n 7) r);
   "higher order recursion" >:: (fun _ ->
-    let r=analyze "let rec repeat=fun f -> fun n -> fun x -> if n<=0 then x else repeat f (n-1) (f x) in repeat (fun x -> x+1) 3 0" in
+    let r=analyze "let repeat=fix repeat f := fun n -> fun x -> if n<=0 then x else repeat f (n-1) (f x) in repeat (fun x -> x+1) 3 0" in
     assert_value (n 3) r);
   "recursive list match" >:: (fun _ ->
-    let r=analyze "let rec sum=fun xs -> match xs with nil -> 0 | x::rest -> x+sum rest end in sum (1::2::nil)" in
+    let r=analyze "let sum=fix sum xs := match xs with nil -> 0 | x::rest -> x+sum rest end in sum (1::2::nil)" in
     assert_value (n 3) r);
   "conditional function uses ite application, including original closure candidate" >:: (fun _ ->
     let r=analyze "let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else (fun x -> x+2) in f 0" in
@@ -114,7 +114,7 @@ let tests = [
     let r=analyze "let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else (fun x -> (1/0)) in if u<theta then f 0 else 0" in
     assert_value (S.Ite (lt (S.Sample 1) theta,n 1,n 0)) r);
   "ite application does not unfold unreachable recursion" >:: (fun _ ->
-    let r=analyze "let rec loop=fun x -> loop x in let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else loop in if u<theta then f 0 else 0" in
+    let r=analyze "let loop=fix loop x := loop x in let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else loop in if u<theta then f 0 else 0" in
     assert_value (S.Ite (lt (S.Sample 1) theta,n 1,n 0)) r);
   "nested ite application retains unresolved inner alternatives" >:: (fun _ ->
     let r=analyze "let u=uniform(0,1) in let v=uniform(0,1) in let f=if u<theta then (if v<0.5 then (fun x -> 1) else (fun x -> 2)) else (fun x -> 3) in if u<theta then f 0 else 0" in
@@ -210,7 +210,13 @@ let tests = [
       with Failure _ | Execute.Error _ -> ())
       ["0#2";"if k <#2 1#2 then 0 else 1";"observe true";"ref 0";
        "!x";"x := 1";"0;1";"discrete(0.5,0.5)";"flip(0.5)";"beta(2,3)"]);
-  "legacy fix desugars identically" >:: (fun _ ->
+  "fix is the recursive function syntax" >:: (fun _ ->
+    let expression=Parse.parse_expr "let f=fix f x := x in f 1" in
+    assert_equal (Ast.Let ("f",Ast.Fix ("f","x",Ast.Var "x"),
+      Ast.Apply (Ast.Var "f",Ast.Const "1"))) expression;
+    assert_equal (Ast.Fix ("f","x",Ast.Var "x")) (Parse.parse_expr "fix f x := x");
+    assert_equal expression (Parse.parse_expr (Ast.to_string expression)));
+  "let rec is sugar for fix" >:: (fun _ ->
     assert_equal (Parse.parse_expr "let f=fix f x := x in f 1")
       (Parse.parse_expr "let rec f=fun x -> x in f 1"));
   "division by zero is not given a symbolic meaning" >:: (fun _ ->

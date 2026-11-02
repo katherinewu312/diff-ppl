@@ -23,7 +23,7 @@ type expr =
   | If of expr * expr * expr
   | Let of string * expr * expr
   | Fun of string * expr
-  | Fix of string * string * expr                    (** Recursive closure; [let rec f = fun x -> body] desugars to [Let (f, Fix (f,x,body), ...)]. *)
+  | Fix of string * string * expr                    (** [fix f x := body]: a recursive function; [f] names it in [body]. The sugar [let rec f = fun x -> body in e] parses as [Let (f, Fix (f,x,body), e)]. *)
   | Apply of expr * expr
   | Pair of expr * expr | First of expr | Second of expr
   | Nil | Cons of expr * expr
@@ -54,8 +54,6 @@ let rec to_string expression =
   | Compare (op,a,b) -> pair (match op with Lt -> "<" | Le -> "<=" | Eq -> "=") a b
   | And (a,b) -> pair "&&" a b | Or (a,b) -> pair "||" a b | Not e -> "not (" ^ to_string e ^ ")"
   | If (c,a,b) -> "(if " ^ to_string c ^ " then " ^ to_string a ^ " else " ^ to_string b ^ ")"
-  | Let (f,Fix (self,x,body),rest) when self=f ->
-      "(let rec " ^ f ^ " = fun " ^ x ^ " -> " ^ to_string body ^ " in " ^ to_string rest ^ ")"
   | Let (x,a,b) -> "(let " ^ x ^ " = " ^ to_string a ^ " in " ^ to_string b ^ ")"
   | Fun (x,e) -> "(fun " ^ x ^ " -> " ^ to_string e ^ ")"
   | Fix (f,x,e) -> "(fix " ^ f ^ " " ^ x ^ " := " ^ to_string e ^ ")"
