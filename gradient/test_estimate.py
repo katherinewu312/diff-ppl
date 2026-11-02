@@ -82,6 +82,45 @@ class GradientTests(unittest.TestCase):
                                      {"theta": ".4"}, {"theta": .8}, draws=1200)
         self.assertAlmostEqual(result["boundary"]["theta"]["mean"], .4)
 
+    def test_parameter_return(self):
+        result = self.check_gradient("let u = uniform(0,1) in if u < theta then theta else 0",
+                                     {"theta": ".5"}, {"theta": 1}, draws=1200)
+        interior = result["interior"]["theta"]
+        self.assertAlmostEqual(interior["mean"], .5, delta=6 * interior["standard_error"])
+        self.assertAlmostEqual(result["boundary"]["theta"]["mean"], .5)
+
+    def test_sample_return(self):
+        result = self.check_gradient("let u = uniform(0,1) in if u < theta then u else 1",
+                                     {"theta": ".4"}, {"theta": -.6}, exact=True)
+        self.assertAlmostEqual(result["interior"]["theta"]["mean"], 0)
+        self.assertAlmostEqual(result["boundary"]["theta"]["mean"], -.6)
+
+    def test_reused_draw(self):
+        result = self.check_gradient("let u = uniform(0,1) in if u + u < theta then theta else 1",
+                                     {"theta": ".6"}, {"theta": .1}, draws=1200)
+        interior = result["interior"]["theta"]
+        self.assertAlmostEqual(interior["mean"], .3, delta=6 * interior["standard_error"])
+        self.assertAlmostEqual(result["boundary"]["theta"]["mean"], -.2)
+
+    def test_scaled_uniform(self):
+        result = self.check_gradient("let u = uniform(0,2) in if u < theta then 1 else 0",
+                                     {"theta": "1.2"}, {"theta": .5}, exact=True)
+        self.assertAlmostEqual(result["interior"]["theta"]["mean"], 0)
+        self.assertAlmostEqual(result["boundary"]["theta"]["mean"], .5)
+
+    def test_moving_coefficient(self):
+        result = self.check_gradient("let u = uniform(0,1) in if u * theta < 0.3 then 1 else 0",
+                                     {"theta": ".6"}, {"theta": -5/6}, exact=True)
+        self.assertAlmostEqual(result["interior"]["theta"]["mean"], 0)
+        self.assertAlmostEqual(result["boundary"]["theta"]["mean"], -5/6)
+
+    def test_independent_draws_upper_triangle(self):
+        result = self.check_gradient("let u = uniform(0,1) in let v = uniform(0,1) in if u + v < theta then 1 else 0",
+                                     {"theta": "1.5"}, {"theta": .5}, draws=1200)
+        self.assertAlmostEqual(result["interior"]["theta"]["mean"], 0)
+        boundary = result["boundary"]["theta"]
+        self.assertAlmostEqual(boundary["mean"], .5, delta=6 * boundary["standard_error"])
+
     def test_oblique_hyperplane(self):
         self.check_gradient("let x = gaussian(0,1) in let y = gaussian(0,1) in if x+y < theta then 1 else 0",
                             {"theta": ".3"}, {"theta": math.exp(-.3**2 / 4) / math.sqrt(4 * math.pi)}, draws=1200)
