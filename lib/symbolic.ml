@@ -50,10 +50,9 @@ end
 
 type t =
   | Number of Rational.t | Boolean of bool | Parameter of string | Sample of int
-  | Finite of int * int | Unit | Nil
+  | Unit | Nil
   | Arith of Ast.arith * t * t
   | Compare of Ast.comparison * t * t
-  | Finite_compare of Ast.comparison * int * t * t
   | And of t * t | Or of t * t | Not of t
   | Ite of t * t * t | Pair of t * t | Cons of t * t
   | Closure of { env : env; self : string option; param : string; body : Ast.expr }
@@ -104,20 +103,14 @@ let comparison op a b =
   | _ when a=b -> Boolean (op<>Ast.Lt)
   | _ -> raw ()
 
-let finite_comparison op n a b = match a,b with
-  | Finite (i,m),Finite (j,k) when m=n && k=n ->
-      Boolean (match op with Ast.Lt -> i<j | Le -> i<=j | Eq -> i=j)
-  | _ -> Finite_compare (op,n,a,b)
-
 let arith_name = function Ast.Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/"
 let compare_name = function Ast.Lt -> "<" | Le -> "<=" | Eq -> "="
 let rec to_string = function
   | Number n -> Rational.to_string n | Boolean b -> string_of_bool b
   | Parameter name -> name | Sample id -> "s" ^ string_of_int id
-  | Finite (i,n) -> Printf.sprintf "%d#%d" i n | Unit -> "()" | Nil -> "nil"
+  | Unit -> "()" | Nil -> "nil"
   | Arith (op,a,b) -> infix (arith_name op) a b
   | Compare (op,a,b) -> infix (compare_name op) a b
-  | Finite_compare (op,n,a,b) -> infix (compare_name op ^ "#" ^ string_of_int n) a b
   | And (a,b) -> infix "and" a b | Or (a,b) -> infix "or" a b
   | Not t -> "not " ^ to_string t
   | Ite (c,a,b) -> Printf.sprintf "ite(%s, %s, %s)" (to_string c) (to_string a) (to_string b)
@@ -130,10 +123,10 @@ and infix op a b = "(" ^ to_string a ^ " " ^ op ^ " " ^ to_string b ^ ")"
 
 let union a b = List.fold_left (fun acc x -> if List.mem x acc then acc else acc @ [x]) a b
 
-(** Rec(pi, phi, v1, v2): finite comparisons deliberately contribute no guard. *)
+(** Record a boundary for each real comparison in the condition. *)
 let rec record path condition minus plus = match condition with
   | Compare ((Ast.Lt | Le),a,b) -> [{path;guard=arith Ast.Sub a b;minus;plus}]
   | And (a,b) | Or (a,b) -> union (record path a minus plus) (record path b minus plus)
   | Not t -> record path t minus plus
-  | Boolean _ | Finite_compare _ | Parameter _ -> []
+  | Boolean _ | Parameter _ -> []
   | _ -> invalid_arg "Condition is outside the paper's Boolean grammar"

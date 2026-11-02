@@ -19,8 +19,7 @@ let text report =
   line "\nBase samples:";
   List.iter (fun (s:S.sample) -> line "  s%d ~ %s" s.id (match s.distribution with
     | Ast.Uniform -> "Uniform(0, 1), 0 < s < 1"
-    | Gaussian -> "Gaussian(0, 1), s in R"
-    | Unsupported_distribution _ -> assert false)) report.analysis.samples;
+    | Gaussian -> "Gaussian(0, 1), s in R")) report.analysis.samples;
   line "\nCandidate boundaries B: %d" (List.length report.checked);
   line "  (path; guard; v_minus; v_plus), exactly as recorded by Rec";
   List.iteri (fun i b ->
@@ -63,12 +62,9 @@ let rec value = function
   | Boolean b -> obj ["kind",quote "boolean";"value",string_of_bool b]
   | Parameter name -> obj ["kind",quote "parameter";"name",quote name]
   | Sample id -> obj ["kind",quote "sample";"id",string_of_int id]
-  | Finite (i,n) -> obj ["kind",quote "finite";"value",string_of_int i;"size",string_of_int n]
   | Unit -> obj ["kind",quote "unit"] | Nil -> obj ["kind",quote "nil"]
   | Arith (op,a,b) -> binary "arithmetic" (S.arith_name op) a b
   | Compare (op,a,b) -> binary "comparison" (S.compare_name op) a b
-  | Finite_compare (op,n,a,b) -> obj ["kind",quote "finite_comparison";"op",quote (S.compare_name op);
-      "size",string_of_int n;"left",value a;"right",value b]
   | And (a,b) -> binary "boolean" "and" a b | Or (a,b) -> binary "boolean" "or" a b
   | Not t -> obj ["kind",quote "not";"operand",value t]
   | Ite (c,a,b) -> obj ["kind",quote "ite";"condition",value c;"then",value a;"else",value b]

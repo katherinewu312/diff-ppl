@@ -27,12 +27,12 @@ let run ?(parameters=[]) ~solver expression =
     | _ -> ()
   in
   let numeric = function
-    | S.Boolean _ | Compare _ | Finite_compare _ | And _ | Or _ | Not _
-    | Closure _ | Pair _ | Cons _ | Nil | Unit | Finite _ -> error "Expected a numeric symbolic value"
+    | S.Boolean _ | Compare _ | And _ | Or _ | Not _
+    | Closure _ | Pair _ | Cons _ | Nil | Unit -> error "Expected a numeric symbolic value"
     | value -> value
   in
   let rec condition = function
-    | (S.Boolean _ | Parameter _ | Compare _ | Finite_compare _) as v -> v
+    | (S.Boolean _ | Parameter _ | Compare _) as v -> v
     | Not v -> S.negate (condition v)
     | And (a,b) -> S.and_ (condition a) (condition b)
     | Or (a,b) -> S.or_ (condition a) (condition b)
@@ -47,14 +47,13 @@ let run ?(parameters=[]) ~solver expression =
     | Var x -> (match List.assoc_opt x env with
         | Some v -> v,[] | None -> error ("Unbound variable " ^ x ^ "; declare free inputs with --param " ^ x))
     | Const n -> S.number n,[] | Bool b -> S.Boolean b,[]
-    | Unit -> S.Unit,[] | Finite (i,n) -> S.Finite (i,n),[] | Nil -> S.Nil,[]
+    | Unit -> S.Unit,[] | Nil -> S.Nil,[]
     | Fun (param,body) -> S.Closure {env;self=None;param;body},[]
     | Fix (self,param,body) -> S.Closure {env;self=Some self;param;body},[]
     | Let (x,a,b) ->
         let va,ba=here a in let vb,bb=eval ((x,va)::env) path b in vb,S.union ba bb
     | Arith (op,a,b) -> two a b (fun a b -> S.arith op (numeric a) (numeric b))
     | Compare (op,a,b) -> two a b (fun a b -> S.comparison op (numeric a) (numeric b))
-    | Finite_compare (op,n,a,b) -> two a b (S.finite_comparison op n)
     (* The paper's operator rule is eager: both operands use the same pi. *)
     | And (a,b) -> two a b (fun a b -> S.and_ (condition a) (condition b))
     | Or (a,b) -> two a b (fun a b -> S.or_ (condition a) (condition b))
@@ -75,7 +74,7 @@ let run ?(parameters=[]) ~solver expression =
         let mu,bm=here mu in let sigma,bs=here sigma in
         let mu=numeric mu and sigma=numeric sigma in let s=fresh Gaussian in
         S.arith Add mu (S.arith Mul sigma s),S.union bm bs
-    | Sample (d,_) -> error ("No sampling rule in main.tex for " ^ distribution_name d)
+    | Sample (d,_) -> error (distribution_name d ^ " requires two arguments")
     | Apply (f,a) ->
         let f,bf=here f in let a,ba=here a in
         let value,b=apply path f a in value,S.union bf (S.union ba b)
@@ -85,8 +84,6 @@ let run ?(parameters=[]) ~solver expression =
     | Second e -> let v,b=here e in let v,b'=project path false v in v,S.union b b'
     | Match_list (e,nil,head,tail,cons) ->
         let v,b=here e in let v,b'=match_list env path v nil head tail cons in v,S.union b b'
-    | Observe _ -> error "No observation rule is specified in main.tex"
-    | Ref _ | Deref _ | Assign _ | Seq _ -> error "No state or sequencing rules are specified in main.tex"
   and apply path fn argument =
     ensure_feasible path;
     match fn with

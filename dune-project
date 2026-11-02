@@ -16,4 +16,4 @@
   (dune (>= 3.11))
   (menhir (>= 20201216))
   (ounit2 (>= 2.2.6)))
- (tags ("probabilistic-programming" "discretization" "ocaml")))
+ (tags ("probabilistic-programming" "ocaml")))

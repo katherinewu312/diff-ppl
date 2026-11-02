@@ -3,7 +3,7 @@ opam-version: "2.0"
 synopsis:
   "Boundary analysis of higher-order recursive probabilistic programs"
 description:
-  "Implementation of the symbolic analysis and boundary queries in lib/"
+  "Implementation of the symbolic analysis and boundary queries"
 license: "MIT"
 tags: ["probabilistic-programming" "ocaml"]
 depends: [

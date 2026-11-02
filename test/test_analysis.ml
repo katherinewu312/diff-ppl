@@ -51,11 +51,11 @@ let tests = [
     let r=analyze "let rec countdown=fun n -> if n<=0 then (if uniform(0,1)<theta then 0 else 1) else countdown (n-1) in countdown 2" in
     assert_counts 1 1 r;
     assert_equal 1 (List.length r.analysis.samples));
-  "constant true reachability skips unsupported branch" >:: (fun _ ->
-    let r=analyze "if 0.5<0.8 then 0 else observe true" in
+  "constant true reachability skips undefined arithmetic" >:: (fun _ ->
+    let r=analyze "if 0.5<0.8 then 0 else (1/0)" in
     assert_value (n 0) r;assert_counts 0 0 r);
   "let bound false reachability" >:: (fun _ ->
-    let r=analyze "let n=10 in if n<0.5 then observe true else 1" in
+    let r=analyze "let n=10 in if n<0.5 then (1/0) else 1" in
     assert_value (n 1) r;assert_counts 0 0 r);
   "correlated nested branches use both reachability rules" >:: (fun _ ->
     let r=analyze "let u=uniform(0,1) in if u<theta then (if u<theta then 1 else 99) else (if u<theta then 99 else 0)" in
@@ -66,10 +66,10 @@ let tests = [
     assert_counts 2 2 r;
     assert_equal 2 (List.length r.analysis.samples));
   "domain entailment" >:: (fun _ ->
-    let r=analyze "if uniform(0,1)<2 then 1 else observe true" in
+    let r=analyze "if uniform(0,1)<2 then 1 else (1/0)" in
     assert_value (n 1) r;assert_counts 0 0 r);
   "nonlinear reachability" >:: (fun _ ->
-    let r=analyze "let x=gaussian(0,1) in if x*x<0 then observe true else 1" in
+    let r=analyze "let x=gaussian(0,1) in if x*x<0 then (1/0) else 1" in
     assert_value (n 1) r;assert_counts 0 0 r);
   "uniform affine reparameterization" >:: (fun _ ->
     let r=analyze "uniform(a,b)" in
@@ -110,8 +110,8 @@ let tests = [
     let r=analyze "let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else (fun x -> x+2) in if u<theta then 0 else f 0" in
     assert_value (S.Ite (lt (S.Sample 1) theta,n 0,n 2)) r;
     assert_counts 2 2 r);
-  "ite application does not execute unreachable unsupported body" >:: (fun _ ->
-    let r=analyze "let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else (fun x -> observe true) in if u<theta then f 0 else 0" in
+  "ite application does not execute unreachable undefined arithmetic" >:: (fun _ ->
+    let r=analyze "let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else (fun x -> (1/0)) in if u<theta then f 0 else 0" in
     assert_value (S.Ite (lt (S.Sample 1) theta,n 1,n 0)) r);
   "ite application does not unfold unreachable recursion" >:: (fun _ ->
     let r=analyze "let rec loop=fun x -> loop x in let u=uniform(0,1) in let f=if u<theta then (fun x -> x+1) else loop in if u<theta then f 0 else 0" in
@@ -131,15 +131,6 @@ let tests = [
     let b=one_boundary r in
     assert_equal (sub (S.Sample 1) theta) b.guard;
     assert_equal (n 1) b.minus;assert_equal (n 0) b.plus);
-  "finite comparison adds no guard" >:: (fun _ ->
-    let r=analyze "fun k -> if k <#2 1#2 then 0 else 1" in
-    assert_counts 0 0 r;
-    let r=analyze "let f=fun k -> if k <#2 1#2 then 0 else 1 in f 0#2" in
-    assert_value (n 0) r);
-  "unresolved finite comparison still creates an ite but no guard" >:: (fun _ ->
-    let r=analyze "if k <#2 1#2 then 0 else 1" in
-    assert_counts 0 0 r;
-    assert_value (S.Ite (S.Finite_compare (Ast.Lt,2,S.Parameter "k",S.Finite (1,2)),n 0,n 1)) r);
   "pair projection distributes over ite" >:: (fun _ ->
     let r=analyze "fst (if uniform(0,1)<theta then (1,2) else (3,4))" in
     assert_value (S.Ite (lt (S.Sample 1) theta,n 1,n 3)) r;
@@ -213,8 +204,12 @@ let tests = [
     let b=List.hd r.checked in
     assert_bool "Unresolved sign changes on a shared surface retain the candidate"
       (match b.answer with Solver.Unknown _ -> true | _ -> false));
-  "unsupported source constructs report missing rules" >:: (fun _ ->
-    List.iter expect_error ["observe true";"ref 0";"flip(0.5)";"beta(2,3)"]);
+  "removed syntax is rejected" >:: (fun _ ->
+    List.iter (fun source ->
+      try ignore (analyze source);assert_failure "Removed syntax was accepted"
+      with Failure _ | Execute.Error _ -> ())
+      ["0#2";"if k <#2 1#2 then 0 else 1";"observe true";"ref 0";
+       "!x";"x := 1";"0;1";"discrete(0.5,0.5)";"flip(0.5)";"beta(2,3)"]);
   "legacy fix desugars identically" >:: (fun _ ->
     assert_equal (Parse.parse_expr "let f=fix f x := x in f 1")
       (Parse.parse_expr "let rec f=fun x -> x in f 1"));

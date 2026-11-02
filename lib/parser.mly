@@ -7,10 +7,8 @@ let rec tuple = function
   | [] -> assert false
 
 let sample d args =
-  (match d with
-   | Uniform | Gaussian when List.length args <> 2 ->
-       failwith (Printf.sprintf "%s requires two parameters" (distribution_name d))
-   | _ -> ());
+  if List.length args <> 2 then
+    failwith (Printf.sprintf "%s requires two parameters" (distribution_name d));
   Sample (d, args)
 %}
 
@@ -25,44 +23,33 @@ let sample d args =
 %token FST SND
 %token FUN ARROW
 %token LESS LESSEQ GREATER GREATEREQ
-%token HASH LT_HASH LEQ_HASH GT_HASH GEQ_HASH EQ_HASH
 %token LPAREN RPAREN
 %token COMMA
 %token EQUAL
 %token EOF
-%token OBSERVE
 %token FIX
 %token COLON_EQUAL  (* := *)
 %token NIL
 %token CONS         (* :: *)
 %token MATCH WITH END BAR
-%token REF          (* ref *)
-%token BANG         (* ! *)
-%token SEMICOLON    (* ; *)
 %token PLUS MINUS TIMES DIVIDE
 
 %start <Ast.expr> prog
 
 (* Define types for non-terminals *) 
-%type <Ast.expr> expr assign_expr cons_expr cmp_expr app_expr atomic_expr prefix_expr
+%type <Ast.expr> expr cons_expr cmp_expr app_expr atomic_expr prefix_expr
 %type <Ast.expr list> expr_comma_list (* New type for list of expressions *)
 %type <unit> opt_bar
 %type <string> number
 %type <Ast.expr> arith_expr mul_expr
 
-%left ARROW
-%left SEMICOLON
-
 %% 
 
 prog: e = expr EOF { e };
 
-/* Lowest precedence: LET, IF, FUN, FIX, MATCH (handled by structure) 
-   then SEMICOLON, then assign_expr and higher operators */
+/* Bindings, conditionals, functions, and list matching. */
 expr:
-    expr SEMICOLON expr 
-    { Seq ($1, $3) }
-  | LET x = IDENT EQUAL e1 = expr IN e2 = expr
+    LET x = IDENT EQUAL e1 = expr IN e2 = expr
     { Let (x, e1, e2) }
   | LET REC f = IDENT EQUAL FUN x = IDENT ARROW body = expr IN rest = expr
     { Let (f, Fix (f, x, body), rest) }
@@ -70,23 +57,11 @@ expr:
     { If (cond, e1, e2) }
   | FUN x = IDENT ARROW e = expr
     { Fun (x, e) }
-  | OBSERVE e = expr
-    { Observe e }
   | FIX f = IDENT x = IDENT COLON_EQUAL e = expr 
     { Fix (f, x, e) }
   | MATCH e1 = expr WITH opt_bar NIL ARROW e_nil = expr BAR y = IDENT CONS ys = IDENT ARROW e_cons = expr END 
     { Match_list (e1, e_nil, y, ys, e_cons) } 
-  (*
-  | FOR i = IDENT EQUAL n1 = expr TO n2 = expr DO body = expr
-    { For (i, n1, n2, body) }
-  *)
-  | assign_expr { $1 } /* Fallthrough to assign_expr */
-  ;
-
-/* Assignment level */
-assign_expr:
-  | prefix_expr COLON_EQUAL assign_expr { Assign ($1, $3) }
-  | or_expr { $1 } /* Fallthrough to or_expr, as per diff */
+  | or_expr { $1 }
   ;
 
 /* OR Level */
@@ -113,11 +88,6 @@ cmp_expr:
   | cmp_expr LESSEQ arith_expr   { Compare (Le, $1, $3) }
   | cmp_expr GREATER arith_expr  { Compare (Lt, $3, $1) }
   | cmp_expr GREATEREQ arith_expr { Compare (Le, $3, $1) }
-  | arith_expr LT_HASH INT arith_expr { Finite_compare (Lt, $3, $1, $4) }
-  | arith_expr LEQ_HASH INT arith_expr { Finite_compare (Le, $3, $1, $4) }
-  | arith_expr GT_HASH INT arith_expr { Finite_compare (Lt, $3, $4, $1) }
-  | arith_expr GEQ_HASH INT arith_expr { Finite_compare (Le, $3, $4, $1) }
-  | arith_expr EQ_HASH INT arith_expr { Finite_compare (Eq, $3, $1, $4) }
   | arith_expr { $1 }            /* Fallthrough to arith_expr */
   ;
 
@@ -142,10 +112,8 @@ cons_expr:
   ;
 
 /* Prefix operators level */
-prefix_expr:                  (* New level for prefix ops like ! and ref *)
+prefix_expr:
   | MINUS prefix_expr         { Arith (Sub, Const "0", $2) }
-  | BANG prefix_expr          { Deref $2 }
-  | REF prefix_expr           { Ref $2 }
   | app_expr { $1 }           /* Fallthrough to app_expr */
   ;
 
@@ -163,8 +131,6 @@ atomic_expr:
   | TRUE                      { Bool true }
   | FALSE                     { Bool false }
   | NIL                       { Nil }
-  | k = INT HASH n = INT
-    { if k < 0 || k >= n then failwith (Printf.sprintf "Invalid finite constant: %d#%d" k n) else Finite (k, n) }
   | x = IDENT                 { Var x }
   | d = DIST LPAREN args = separated_nonempty_list(COMMA, expr) RPAREN
     { sample d args }

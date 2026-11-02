@@ -13,8 +13,7 @@ let status = function Sat -> "sat" | Unsat -> "unsat" | Unknown _ -> "unknown"
 let domains samples = List.fold_left (fun acc (s:S.sample) -> match s.distribution with
   | Ast.Uniform -> S.and_ acc (S.and_ (S.comparison Ast.Lt S.zero (S.Sample s.id))
       (S.comparison Ast.Lt (S.Sample s.id) S.one))
-  | Gaussian -> acc
-  | Unsupported_distribution _ -> assert false) S.truth samples
+  | Gaussian -> acc) S.truth samples
 
 let smt query =
   let variables=Hashtbl.create 16 in
@@ -35,7 +34,6 @@ let smt query =
     | S.Number n -> numeral n
     | Parameter name -> variable ("parameter:" ^ name) "Real"
     | Sample id -> variable ("sample:" ^ string_of_int id) "Real"
-    | Finite (i,_) -> string_of_int i
     | Arith (Ast.Div,a,(Number n as b)) when n.num<>0 -> app "/" [real a;real b]
     | Arith (Ast.Div,_,_) ->
         raise (Unsupported "Symbolic division requires definedness assumptions not specified in the paper")
@@ -45,7 +43,7 @@ let smt query =
   and boolean = function
     | S.Boolean b -> string_of_bool b
     | Parameter name -> variable ("parameter:" ^ name) "Bool"
-    | Compare (op,a,b) | Finite_compare (op,_,a,b) -> app (S.compare_name op) [real a;real b]
+    | Compare (op,a,b) -> app (S.compare_name op) [real a;real b]
     | And (a,b) -> app "and" [boolean a;boolean b]
     | Or (a,b) -> app "or" [boolean a;boolean b]
     | Not a -> app "not" [boolean a]
@@ -92,7 +90,7 @@ let entails solver samples path condition =
 (** Structural data equality; comparing different function values is deliberately
     UNKNOWN, because the paper supplies no extensional equality for closures. *)
 let rec boolean_value = function
-  | S.Boolean _ | Compare _ | Finite_compare _ | And _ | Or _ | Not _ -> true
+  | S.Boolean _ | Compare _ | And _ | Or _ | Not _ -> true
   | Ite (_,a,b) -> boolean_value a && boolean_value b
   | _ -> false
 
@@ -101,7 +99,6 @@ let rec different a b =
   | S.Pair (a,b),S.Pair (c,d) | Cons (a,b),Cons (c,d) -> S.or_ (different a c) (different b d)
   | Nil,Cons _ | Cons _,Nil -> S.truth
   | Boolean x,Boolean y -> S.Boolean (x<>y)
-  | Finite (i,n),Finite (j,m) when n=m -> S.Boolean (i<>j)
   | Closure _,_ | _,Closure _ -> raise (Unsupported "The paper does not define inequality between closures")
   | _ when boolean_value a && boolean_value b ->
       S.or_ (S.and_ a (S.negate b)) (S.and_ (S.negate a) b)
@@ -125,7 +122,6 @@ let specialize solver samples assumptions value =
         else if prove context (S.negate c) then S.falsity
         else (
           unresolved := S.union !unresolved [S.arith Ast.Sub a b]; c)
-    | Finite_compare (op,n,a,b) -> S.finite_comparison op n (walk context a) (walk context b)
     | Arith (op,a,b) -> S.arith op (walk context a) (walk context b)
     | And (a,b) -> S.and_ (walk context a) (walk context b)
     | Or (a,b) -> S.or_ (walk context a) (walk context b)

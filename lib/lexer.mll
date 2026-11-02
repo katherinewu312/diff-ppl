@@ -20,9 +20,9 @@ let next_line lexbuf =
 
 let keywords = [
   "let", LET; "rec", REC; "in", IN; "if", IF; "then", THEN; "else", ELSE;
-  "true", TRUE; "false", FALSE; "not", NOT; "observe", OBSERVE;
+  "true", TRUE; "false", FALSE; "not", NOT;
   "fst", FST; "snd", SND; "fun", FUN; "fix", FIX;
-  "nil", NIL; "match", MATCH; "with", WITH; "end", END; "ref", REF;
+  "nil", NIL; "match", MATCH; "with", WITH; "end", END;
 ]
 
 let identifier s =
@@ -58,10 +58,8 @@ rule token = parse
   | ')'       { RPAREN }
   | ','       { COMMA }
   | ":="      { COLON_EQUAL }
-  | ";"       { SEMICOLON }
   | "::"      { CONS }
   | "|"       { BAR }
-  | '!'       { BANG }
   | '+'       { PLUS }
   | '-'       { MINUS }
   | '*'       { TIMES }
@@ -70,12 +68,6 @@ rule token = parse
                  with _ -> error lexbuf (Printf.sprintf "Invalid integer literal: %s" i) }
   | float as f { FLOAT f }
   | ident as s { identifier s }
-  | "<=" "#"   { LEQ_HASH }
-  | "<" "#"    { LT_HASH }
-  | ">=" "#"   { GEQ_HASH }
-  | ">" "#"    { GT_HASH }
-  | "==" "#"   { EQ_HASH }
-  | "#"        { HASH }
   | eof       { EOF }
   | _ as c    { error lexbuf (Printf.sprintf "Unexpected character: %c" c) }
 

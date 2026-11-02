@@ -13,3 +13,8 @@ generating those reports:** the analyzer's `--at` loses derivatives.
 Repeat the estimator's `--at` for multiple parameters. Output contains the total,
 interior, and boundary estimates in a concise text summary, each with a Monte
 Carlo standard error.
+
+### Testing
+```
+python3 -m unittest gradient.test_estimate -v
+```

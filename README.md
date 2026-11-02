@@ -1,5 +1,8 @@
 # Boundaries
 
+The language supports real and Boolean expressions, functions and recursion,
+pairs, lists, and `uniform`/`gaussian` sampling (`normal` is an alias).
+
 ## Run
 
 Requires OCaml 4.13+, Dune 3.11+, Menhir, and **Z3 on PATH**. OUnit2 is used for
