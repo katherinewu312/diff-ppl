@@ -1,1 +1,0 @@
-let u = uniform(0,1) in let v = uniform(0,1) in if u + v < theta then 1 else 0
