@@ -1,0 +1,6 @@
+let v = gaussian(mu1, 5) in
+
+if v > 0 then
+  gaussian(mu2, 1)
+else
+  gaussian(-2, 1)

@@ -1,0 +1,50 @@
+
+let rec simulate = fun state ->
+  let n = fst state in
+  let r0 = snd state in
+  let v = fst r0 in
+  let r1 = snd r0 in
+  let gear = fst r1 in
+  let r2 = snd r1 in
+  let w = fst r2 in
+  let next = snd r2 in
+
+  if n <= 0 then
+    nil
+  else
+    let new_v =
+      if gear > 0.8 then
+        1.078 * v + 0.1 * gaussian(5, 1)
+      else
+        v - 0.00005 * v * v + gaussian(0, 1)
+    in
+
+    let shift =
+      if gear > 0 then
+        if gear < 1.5 then
+          new_v > s1
+        else
+          if gear < 2.5 then new_v > s2 else false
+      else
+        false
+    in
+
+    let new_next = if shift then gear + 1 else next in
+
+    let new_gear =
+      if shift then
+        0
+      else
+        if gear > 0 then gear
+        else if w < 0.1 then next else gear
+    in
+
+    let new_w = if shift then 0.2 else w - 0.1 in
+    let measured_v = v + gaussian(0, 0.5) in
+
+    measured_v ::
+      simulate (n - 1,
+        (new_v, (new_gear, (new_w, new_next))))
+in
+
+simulate (21, (5, (1, (0, 2))))

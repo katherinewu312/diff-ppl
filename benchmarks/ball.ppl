@@ -1,0 +1,41 @@
+
+let rec simulate = fun state ->
+  let n = fst state in
+  let r0 = snd state in
+  let height = fst r0 in
+  let r1 = snd r0 in
+  let velocity = fst r1 in
+  let mode = snd r1 in
+
+  if n <= 0 then
+    height :: nil
+  else
+    let next_velocity =
+      if mode < 0 then
+        velocity - 9.8 * 0.08
+        + gaussian(0, 0.1)
+      else
+        velocity - 9.8 * 0.08
+        - 0.14 * (R * velocity + C * height) * 0.08
+        + gaussian(0, 0.1)
+    in
+
+    let next_height =
+      height + next_velocity * 0.08
+      + gaussian(0, 0.1)
+    in
+
+    let next_mode =
+      if mode < 0 then
+        if next_height <= 0 then 1 else mode
+      else
+        if next_height > 0 then -1 else mode
+    in
+
+    height ::
+      simulate (n - 1,
+        (next_height, (next_velocity, next_mode)))
+in
+
+let initial_height = gaussian(9, 1) in
+simulate (35, (initial_height, (0, -1)))

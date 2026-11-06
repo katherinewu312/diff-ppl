@@ -1,0 +1,41 @@
+
+let rec simulate = fun state ->
+  let n = fst state in
+  let pair = snd state in
+  let temp = fst pair in
+  let mode = snd pair in
+
+  if n <= 0 then
+    temp :: nil
+  else
+    let next_temp =
+      if mode > 0 then
+        0.99 * temp + 0.5 + gaussian(0, 0.1)
+      else
+        0.99 * temp + gaussian(0, 0.1)
+    in
+    let next_mode =
+      if mode > 0 then
+        if next_temp > tOff then -1 else mode
+      else
+        if next_temp < tOn then 1 else mode
+    in
+    if n <= 1 then
+      next_temp :: nil
+    else
+      temp :: simulate (n - 1, (next_temp, next_mode))
+in
+
+let rec add_noise = fun xs ->
+  match xs with
+  | nil -> nil
+  | head :: tail ->
+      match tail with
+      | nil -> head :: nil
+      | next_head :: remaining ->
+          (head + gaussian(0, 1)) :: add_noise tail
+      end
+  end
+in
+
+add_noise (simulate (31, (16, -1)))
