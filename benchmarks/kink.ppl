@@ -1,0 +1,4 @@
+(* New example *)
+
+let x = uniform(0, 1) in
+if x < theta then theta - x else 0

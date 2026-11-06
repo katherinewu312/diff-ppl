@@ -1,0 +1,11 @@
+(* Source: Khajwal, Ong & Wagner, Fast and Correct Gradient-Based Optimisation for Probabilistic Programming via Smoothing, Example 1. 
+
+RQ1
+
+Plan: evaluate the gradient at theta \in {-1, -0.5, 0, 0.5, 1} using 100, 1000, 10000, 100000 samples. Compare Vela, pathwise AD, and the analytical gradient. Maybe also the LYY18 boundary estimator and smoothing method
+*)
+
+let s = gaussian(0, 1) in
+-0.5 * theta * theta +
+  (if s + theta < 0 then 0 else 1)
+
