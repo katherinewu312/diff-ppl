@@ -1,0 +1,24 @@
+(* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/ISOLA/logistic-bool.soga
+   Preserve all 35 updates and return the original final phi.
+   The monitor is overwritten each iteration, exactly as in the source. *)
+
+let rec simulate = fun state ->
+  let remaining = fst state in
+  let values = snd state in
+  let currX = fst values in
+  let phi = snd values in
+  if remaining <= 0 then
+    phi
+  else
+    let xSquare = currX * currX in
+    let noise = gaussian(0, 0.01) in
+    let xNoise = currX * noise in
+    let newX = 1.22 * currX - 0.022 * xSquare + xNoise in
+    let phi = if newX > 9.75 then 1 else 0 in
+    let currX = newX in
+    simulate (remaining - 1, (currX, phi))
+in
+
+let currX = 0.8 in
+let phi = 0 in
+simulate (2, (currX, phi))

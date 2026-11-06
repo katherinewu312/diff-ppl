@@ -1,0 +1,24 @@
+(* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/Optimization/CaseStudies/bnn_one_x.soga
+   Return the original output y, without a new loss. *)
+
+let w1 = gaussian(_muw1, 0.2) in
+let w2 = gaussian(_muw2, 0.2) in
+let w3 = gaussian(_muw3, 0.2) in
+let w4 = gaussian(_muw4, 0.2) in
+let b1 = gaussian(_mub1, 0.2) in
+let b2 = gaussian(_mub2, 0.2) in
+let b3 = gaussian(_mub3, 0.2) in
+
+let a10 = _x * w1 in
+let a10 = a10 + b1 in
+let a11 = _x * w2 in
+let a11 = a11 + b2 in
+
+let a10 = if a10 < 0.0 then gaussian(0, 0.01) else a10 in
+let a11 = if a11 < 0.0 then gaussian(0, 0.01) else a11 in
+
+let p1 = w3 * a10 in
+let p2 = w4 * a11 in
+let y = p1 + p2 + b3 in
+let y = y + gaussian(0, 0.5) in
+y

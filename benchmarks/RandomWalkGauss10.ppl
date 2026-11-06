@@ -1,0 +1,18 @@
+(* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/RandomWalkGauss10.soga
+   The original 10 iterations and fixed threshold 0.6745 are preserved.
+   Return the original output variable x. *)
+
+let rec walk = fun state ->
+  let remaining = fst state in
+  let x = snd state in
+  if remaining <= 0 then
+    x
+  else
+    let x =
+      if gaussian(0, 1) < 0.6745 then x - 1 else x + 1
+    in
+    walk (remaining - 1, x)
+in
+
+let x = 0 in
+walk (10, x)

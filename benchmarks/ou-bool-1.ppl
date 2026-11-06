@@ -1,0 +1,21 @@
+(* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/ISOLA/ou-bool-1.soga
+   Preserve all 30 iterations, constants, and the latched Boolean monitor.
+   Return the original numeric monitor phi: once set to 1, it stays 1. *)
+
+let rec simulate = fun state ->
+  let remaining = fst state in
+  let values = snd state in
+  let X = fst values in
+  let phi = snd values in
+  if remaining <= 0 then
+    phi
+  else
+    let newX = 0.8 * X + 0.4 + gaussian(0, 0.0484) in
+    let X = newX in
+    let phi = if newX > 2.1 then 1 else phi in
+    simulate (remaining - 1, (X, phi))
+in
+
+let X = -2.0 in
+let phi = 0 in
+simulate (30, (X, phi))

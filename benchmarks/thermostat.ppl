@@ -38,4 +38,16 @@ let rec add_noise = fun xs ->
   end
 in
 
-add_noise (simulate (31, (16, -1)))
+(* Objective: mean squared observed-temperature error relative to setpoint 20.
+   Preserve the observation noise and the original 31 returned temperatures. *)
+   
+let rec squared_error = fun temperatures ->
+  match temperatures with
+  | nil -> 0
+  | temp :: rest ->
+      let error = temp - 20 in
+      error * error + squared_error rest
+  end
+in
+
+squared_error (add_noise (simulate (31, (16, -1)))) / 31

@@ -1,0 +1,11 @@
+(* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/Optimization/Optim6.soga
+   A singleton Gaussian mixture is translated to gaussian(mean, std).
+   Return the original output variable a. retain parameter _coeff. *)
+
+let a =
+  if gaussian(0, 1) < _coeff then
+    gaussian(-5, 1)
+  else
+    gaussian(5, 1)
+in
+a
