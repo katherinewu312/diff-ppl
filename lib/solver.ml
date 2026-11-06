@@ -15,6 +15,14 @@ let domains samples = List.fold_left (fun acc (s:S.sample) -> match s.distributi
       (S.comparison Ast.Lt (S.Sample s.id) S.one))
   | Gaussian -> acc) S.truth samples
 
+(* Identity comparison preserves existing sharing without traversing entire terms.
+   Hashing is explicitly bounded, including for deeply shared expressions. *)
+module Terms = Hashtbl.Make (struct
+  type t = S.t
+  let equal a b = a == b
+  let hash value = Hashtbl.hash_param 10 10 value
+end)
+
 let smt query =
   let variables=Hashtbl.create 16 in
   let variable key sort =
@@ -26,11 +34,32 @@ let smt query =
         Hashtbl.add variables key (symbol,sort); symbol
   in
   let numeral (n:S.Rational.t) =
-    let num=if n.num<0 then Printf.sprintf "(- %d)" (-n.num) else string_of_int n.num in
+    (* Explicit Real numerals also type integer-only ite bodies correctly
+       inside a Real definition; decimal .0 remains exact in SMT-LIB. *)
+    let num=if n.num<0 then Printf.sprintf "(- %d.0)" (-n.num)
+      else string_of_int n.num ^ ".0" in
     if n.den=1 then num else Printf.sprintf "(/ %s %d)" num n.den
   in
   let app op args = "(" ^ op ^ " " ^ String.concat " " args ^ ")" in
-  let rec real = function
+  let reals=Terms.create 64 and booleans=Terms.create 64 in
+  let definitions=ref [] and next_definition=ref 0 in
+  let define table sort value encode =
+    match Terms.find_opt table value with
+    | Some name -> name
+    | None ->
+        (* Encode dependencies first, then emit their user. Separate tables keep
+           numeric and Boolean ite expressions in their respective sorts. *)
+        let body=encode value in
+        let name="t" ^ string_of_int !next_definition in
+        incr next_definition;
+        Terms.add table value name;
+        definitions := Printf.sprintf "(define-fun %s () %s %s)" name sort body :: !definitions;
+        name
+  in
+  let rec real value = match value with
+    | S.Number _ | Parameter _ | Sample _ -> real_body value
+    | _ -> define reals "Real" value real_body
+  and real_body = function
     | S.Number n -> numeral n
     | Parameter name -> variable ("parameter:" ^ name) "Real"
     | Sample id -> variable ("sample:" ^ string_of_int id) "Real"
@@ -40,7 +69,10 @@ let smt query =
     | Arith (op,a,b) -> app (S.arith_name op) [real a;real b]
     | Ite (c,a,b) -> app "ite" [boolean c;real a;real b]
     | _ -> raise (Unsupported "SMT query requires a numeric value (functions are not compared extensionally)")
-  and boolean = function
+  and boolean value = match value with
+    | S.Boolean _ | Parameter _ -> boolean_body value
+    | _ -> define booleans "Bool" value boolean_body
+  and boolean_body = function
     | S.Boolean b -> string_of_bool b
     | Parameter name -> variable ("parameter:" ^ name) "Bool"
     | Compare (op,a,b) -> app (S.compare_name op) [real a;real b]
@@ -53,7 +85,7 @@ let smt query =
   let assertion=boolean query in
   let declarations=Hashtbl.to_seq_values variables |> List.of_seq
     |> List.sort compare |> List.map (fun (name,sort) -> "(declare-const " ^ name ^ " " ^ sort ^ ")") in
-  String.concat "\n" (declarations @ ["(assert " ^ assertion ^ ")";"(check-sat)";"(exit)"])
+  String.concat "\n" (declarations @ List.rev !definitions @ ["(assert " ^ assertion ^ ")";"(check-sat)";"(exit)"])
 
 let query solver samples condition =
   let formula=S.and_ (domains samples) condition in
