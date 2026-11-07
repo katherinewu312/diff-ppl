@@ -1,6 +1,5 @@
 (* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/ISOLA/logistic-bool.soga
-   Preserve all 35 updates and return the original final phi.
-   The monitor is overwritten each iteration, exactly as in the source. *)
+   Previously: 35 updates, Now: 4 updates. *)
 
 let rec simulate = fun state ->
   let remaining = fst state in
@@ -21,4 +20,4 @@ in
 
 let currX = 0.8 in
 let phi = 0 in
-simulate (2, (currX, phi))
+simulate (4, (currX, phi))

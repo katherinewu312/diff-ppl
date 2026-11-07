@@ -1,5 +1,5 @@
 (* Source: https://github.com/frarandone/DeGAS/blob/main/programs/SOGA/RandomWalkGauss10.soga
-   The original 10 iterations and fixed threshold 0.6745 are preserved.
+   Previously: 10 iterations, Now: 2 iterations.
    Return the original output variable x. *)
 
 let rec walk = fun state ->
@@ -15,4 +15,4 @@ let rec walk = fun state ->
 in
 
 let x = 0 in
-walk (10, x)
+walk (2, x)

@@ -1,3 +1,6 @@
+(* From DeGAS, Section 5 Page 13.
+Actually adapted from Towards Verified Stochastic Variational Inference for Probabilistic Programs, by Lee, Yu, Rival, and Yang (POPL 2020) *)
+
 let v = gaussian(mu1, 5) in
 
 if v > 0 then

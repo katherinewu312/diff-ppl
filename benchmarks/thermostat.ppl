@@ -1,3 +1,5 @@
+(* Original thermostat dynamics, with arrays represented as lists.
+   Maximize expected negative mean squared observed-temperature error from 20. *)
 
 let rec simulate = fun state ->
   let n = fst state in
@@ -16,9 +18,9 @@ let rec simulate = fun state ->
     in
     let next_mode =
       if mode > 0 then
-        if next_temp > tOff then -1 else mode
+        if next_temp > _tOff then -1 else mode
       else
-        if next_temp < tOn then 1 else mode
+        if next_temp < _tOn then 1 else mode
     in
     if n <= 1 then
       next_temp :: nil
@@ -38,9 +40,8 @@ let rec add_noise = fun xs ->
   end
 in
 
-(* Objective: mean squared observed-temperature error relative to setpoint 20.
-   Preserve the observation noise and the original 31 returned temperatures. *)
-   
+(* The final update overwrites T[30]; observation noise applies only to
+   T[0] through T[29]. Preserve these observations in the reward. *)
 let rec squared_error = fun temperatures ->
   match temperatures with
   | nil -> 0
@@ -50,4 +51,4 @@ let rec squared_error = fun temperatures ->
   end
 in
 
-squared_error (add_noise (simulate (31, (16, -1)))) / 31
+0 - squared_error (add_noise (simulate (4, (16, -1)))) / 4

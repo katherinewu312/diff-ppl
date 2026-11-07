@@ -1,3 +1,7 @@
+(* From: Testing Reliability in a Stress-Strength Model When X and Y Are Normally Distributed — Weerahandi and Johnson, Technometrics, 1992 
+
+This is the special case where mu1=theta, mu2=0, sigma1=sigma2=1.
+*)
 
 let strength = gaussian(theta, 1) in
 let stress = gaussian(0, 1) in
