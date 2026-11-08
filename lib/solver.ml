@@ -146,7 +146,20 @@ let specialize solver samples assumptions value =
   let unresolved=ref [] in
   let prove context c = match c with
     | S.Boolean b -> b | _ -> entails solver samples context c in
-  let rec walk context = function
+  (* Specialization depends on both the value and its path assumptions. Cache
+     by identity in both dimensions so shared arithmetic is visited once per
+     context, without conflating different branch assumptions. *)
+  let contexts=Terms.create 32 in
+  let rec walk context value =
+    let values=match Terms.find_opt contexts context with
+      | Some values -> values
+      | None -> let values=Terms.create 64 in Terms.add contexts context values;values in
+    match Terms.find_opt values value with
+    | Some result -> result
+    | None ->
+        let result=walk_body context value in
+        Terms.add values value result;result
+  and walk_body context = function
     | S.Compare (op,a,b) ->
         let a=walk context a and b=walk context b in
         let c=S.comparison op a b in
@@ -169,11 +182,18 @@ let specialize solver samples assumptions value =
   in
   let value=walk assumptions value in value,!unresolved
 
-let rec polynomial = function
-  | S.Number _ | Parameter _ | Sample _ -> true
-  | Arith (Ast.Div,a,Number n) -> n.num<>0 && polynomial a
-  | Arith ((Ast.Add | Sub | Mul),a,b) -> polynomial a && polynomial b
-  | _ -> false
+let polynomial value =
+  let cache=Terms.create 64 in
+  let rec check value = match Terms.find_opt cache value with
+    | Some result -> result
+    | None ->
+        let result=match value with
+          | S.Number _ | Parameter _ | Sample _ -> true
+          | Arith (Ast.Div,a,Number n) -> n.num<>0 && check a
+          | Arith ((Ast.Add | Sub | Mul),a,b) -> check a && check b
+          | _ -> false in
+        Terms.add cache value result;result
+  in check value
 
 let boundary solver samples ~value (b:S.boundary) =
   let none answer={minus=None;plus=None;answer} in
