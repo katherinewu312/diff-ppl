@@ -130,3 +130,65 @@ let rec record path condition minus plus = match condition with
   | Not t -> record path t minus plus
   | Boolean _ | Parameter _ -> []
   | _ -> invalid_arg "Condition is outside the paper's Boolean grammar"
+
+(** Only simplify operations known to be total.  In particular, x-x is not
+    rewritten when evaluating x might encounter an undefined division. *)
+let rec total = function
+  | Number _ | Boolean _ | Parameter _ | Sample _ | Unit | Nil -> true
+  | Arith (Ast.Div,a,Number n) -> n.num <> 0 && total a
+  | Arith (Ast.Div,_,_) -> false
+  | Arith (_,a,b) | Compare (_,a,b) | And (a,b) | Or (a,b)
+  | Pair (a,b) | Cons (a,b) -> total a && total b
+  | Not a -> total a
+  | Ite (c,a,b) -> total c && total a && total b
+  | Closure _ -> false
+
+(** Pure, definedness-preserving simplification; solver-proved guard
+    equivalences are substituted separately by Solver.normalize_final. *)
+let simplify value =
+  let memo = Hashtbl.create 128 in
+  let rec walk v =
+    match Hashtbl.find_opt memo v with
+    | Some result -> result
+    | None ->
+        let result = match v with
+          | Arith (op,a,b) ->
+              let a=walk a and b=walk b in
+              (match op with
+               | Ast.Sub when a=b && total a -> zero
+               | _ -> arith op a b)
+          | Compare (op,a,b) -> comparison op (walk a) (walk b)
+          | And (a,b) -> and_ (walk a) (walk b)
+          | Or (a,b) -> or_ (walk a) (walk b)
+          | Not a -> negate (walk a)
+          | Ite (c,a,b) ->
+              let c=walk c and a=walk a and b=walk b in
+              (match c with
+               | Boolean true -> a
+               | Boolean false -> b
+               | _ when a=b && total c -> a
+               | _ -> Ite (c,a,b))
+          | Pair (a,b) -> Pair (walk a,walk b)
+          | Cons (a,b) -> Cons (walk a,walk b)
+          | x -> x
+        in
+        Hashtbl.add memo v result;result
+  in walk value
+
+(** Every atomic comparison in the complete symbolic output. *)
+let atomic_comparisons value =
+  let seen=Hashtbl.create 64 in
+  let result=ref [] in
+  let rec visit v =
+    if not (Hashtbl.mem seen v) then begin
+      Hashtbl.add seen v ();
+      match v with
+      | Compare (_,a,b) as atom ->
+          result := atom :: !result; visit a; visit b
+      | Arith (_,a,b) | And (a,b) | Or (a,b)
+      | Pair (a,b) | Cons (a,b) -> visit a;visit b
+      | Not a -> visit a
+      | Ite (c,a,b) -> visit c;visit a;visit b
+      | _ -> ()
+    end
+  in visit value;List.rev !result

@@ -1,6 +1,6 @@
-(** Literal implementation of the judgments in tex/main.tex, Section Analysis.
-    [eval] implements =>, [apply] implements the auxiliary downward arrow.
-    No path enumeration, probability integration, or AD is performed. *)
+(** Symbolic evaluation and boundary extraction. Conditional-valued guards
+    are lifted at value level, then eliminated under refined path conditions.
+    Source operands remain eager; lifting never repeats a sampling operation. *)
 open Ast
 module S = Symbolic
 
@@ -31,12 +31,55 @@ let run ?(parameters=[]) ~solver expression =
     | Closure _ | Pair _ | Cons _ | Nil | Unit -> error "Expected a numeric symbolic value"
     | value -> value
   in
-  let rec condition = function
-    | (S.Boolean _ | Parameter _ | Compare _) as v -> v
-    | Not v -> S.negate (condition v)
-    | And (a,b) -> S.and_ (condition a) (condition b)
-    | Or (a,b) -> S.or_ (condition a) (condition b)
-    | _ -> error "The paper's condition grammar has no rule for this value (for example, an ite of Boolean values)"
+  let condition path value =
+    let numeric_contexts=Solver.Terms.create 16 and boolean_contexts=Solver.Terms.create 16 in
+    let memo contexts path value compute =
+      let values=match Solver.Terms.find_opt contexts path with
+        | Some values -> values
+        | None -> let values=Solver.Terms.create 32 in
+            Solver.Terms.add contexts path values;values in
+      match Solver.Terms.find_opt values value with
+      | Some result -> result
+      | None -> let result=compute () in Solver.Terms.add values value result;result
+    in
+    (* These are transformations of values, not source evaluation. Both source
+       operands have already executed before their choices are distributed. *)
+    let rec choose path c yes no = match c with
+      | S.Boolean true -> yes path
+      | Boolean false -> no path
+      | Ite (d,a,b) ->
+          choose path d (fun path -> choose path a yes no)
+            (fun path -> choose path b yes no)
+      | _ ->
+          if entailed path c then yes path
+          else if entailed path (S.negate c) then no path
+          else S.Ite (c,yes (S.and_ path c),no (S.and_ path (S.negate c)))
+    and lift path op a b = match a,b with
+      | S.Ite (c,x,y),_ ->
+          choose path c (fun path -> lift path op x b) (fun path -> lift path op y b)
+      | _,S.Ite (c,x,y) ->
+          choose path c (fun path -> lift path op a x) (fun path -> lift path op a y)
+      | _ -> op a b
+    and real path value = memo numeric_contexts path value (fun () -> match value with
+      | S.Number _ | Parameter _ | Sample _ -> value
+      | Arith (op,a,b) -> lift path (S.arith op) (real path a) (real path b)
+      | Ite (c,a,b) ->
+          choose path (boolean path c) (fun path -> real path a) (fun path -> real path b)
+      | _ -> error "Expected a numeric symbolic value")
+    and boolean path value = memo boolean_contexts path value (fun () -> match value with
+      | S.Boolean _ | Parameter _ -> value
+      | Compare (op,a,b) -> lift path (S.comparison op) (real path a) (real path b)
+      | Not a ->
+          let rec negate = function
+            | S.Ite (c,a,b) -> S.Ite (c,negate a,negate b)
+            | a -> S.negate a in
+          negate (boolean path a)
+      | And (a,b) -> lift path S.and_ (boolean path a) (boolean path b)
+      | Or (a,b) -> lift path S.or_ (boolean path a) (boolean path b)
+      | Ite (c,a,b) ->
+          choose path (boolean path c) (fun path -> boolean path a) (fun path -> boolean path b)
+      | _ -> error "Expected a symbolic Boolean condition")
+    in boolean path value
   in
   let rec eval env path expression =
     ensure_feasible path;
@@ -53,19 +96,15 @@ let run ?(parameters=[]) ~solver expression =
     | Let (x,a,b) ->
         let va,ba=here a in let vb,bb=eval ((x,va)::env) path b in vb,S.union ba bb
     | Arith (op,a,b) -> two a b (fun a b -> S.arith op (numeric a) (numeric b))
-    | Compare (op,a,b) -> two a b (fun a b -> S.comparison op (numeric a) (numeric b))
+    | Compare (op,a,b) -> two a b (fun a b -> condition path (S.comparison op (numeric a) (numeric b)))
     (* The paper's operator rule is eager: both operands use the same pi. *)
-    | And (a,b) -> two a b (fun a b -> S.and_ (condition a) (condition b))
-    | Or (a,b) -> two a b (fun a b -> S.or_ (condition a) (condition b))
-    | Not a -> let v,b=here a in S.negate (condition v),b
+    | And (a,b) -> two a b (fun a b -> condition path (S.And (a,b)))
+    | Or (a,b) -> two a b (fun a b -> condition path (S.Or (a,b)))
+    | Not a -> let v,b=here a in condition path (S.Not v),b
     | If (c,a,b) ->
-        let c,bc=here c in let c=condition c in
-        if entailed path c then let v,b=here a in v,S.union bc b
-        else if entailed path (S.negate c) then let v,b=here b in v,S.union bc b
-        else
-          let va,ba=eval env (S.and_ path c) a in
-          let vb,bb=eval env (S.and_ path (S.negate c)) b in
-          S.Ite (c,va,vb), S.union bc (S.union ba (S.union bb (S.record path c va vb)))
+        let c,bc=here c in
+        let v,boundaries=branch env path (condition path c) a b in
+        v,S.union bc boundaries
     | Sample (Uniform,[a;b]) ->
         let a,ba=here a in let b,bb=here b in
         let a=numeric a and b=numeric b in let s=fresh Uniform in
@@ -84,6 +123,22 @@ let run ?(parameters=[]) ~solver expression =
     | Second e -> let v,b=here e in let v,b'=project path false v in v,S.union b b'
     | Match_list (e,nil,head,tail,cons) ->
         let v,b=here e in let v,b'=match_list env path v nil head tail cons in v,S.union b b'
+  (* S-IfIte / True / False consume Boolean choices without evaluating e0
+     again. Leaf conditions use the ordinary S-If family. No fresh variable
+     is needed internally, so the implementation also avoids capture. *)
+  and branch env path c yes no =
+    match c with
+    | S.Ite (selector,a,b) ->
+        split path selector (fun path -> branch env path a yes no)
+          (fun path -> branch env path b yes no)
+    | _ -> split path c (fun path -> eval env path yes) (fun path -> eval env path no)
+  and split path c yes no =
+    if entailed path c then yes path
+    else if entailed path (S.negate c) then no path
+    else
+      let va,ba=yes (S.and_ path c) in
+      let vb,bb=no (S.and_ path (S.negate c)) in
+      S.Ite (c,va,vb),S.union ba (S.union bb (S.record path c va vb))
   and apply path fn argument =
     ensure_feasible path;
     match fn with
