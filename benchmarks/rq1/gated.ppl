@@ -1,0 +1,12 @@
+(* RQ1-03: Gated outcomes.
+   Parameter protocol: 0 < theta < 1.
+   Genuine jumps: s = theta where t < 0.3 or t > 0.7;
+   t = 0.3 where s < theta; t = 0.7 where s > theta.
+   Surface descriptions omit their lower-dimensional intersections. *)
+
+let s = uniform(0, 1) in
+let t = uniform(0, 1) in
+if s < theta then
+  if t < 0.3 then 1.0 else 0.0
+else
+  if t > 0.7 then 2.0 else 0.0

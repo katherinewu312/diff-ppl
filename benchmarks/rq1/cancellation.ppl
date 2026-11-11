@@ -1,0 +1,13 @@
+(* RQ1-02: Canceled adjustment.
+   Parameter protocol: 0 < theta < 1.
+   Genuine jumps: t = 0.4 (magnitude 4), u = 0.7 (magnitude 3).
+   The s = theta adjustment cancels only in the final arithmetic expression. *)
+
+let s = uniform(0, 1) in
+let t = uniform(0, 1) in
+let u = uniform(0, 1) in
+let adjustment = if s < theta then 1.0 else 0.0 in
+let payment = if t < 0.4 then 2.0 else 0.0 in
+let fee = if u < 0.7 then 3.0 else 0.0 in
+let subtotal = adjustment + payment in
+2.0 * (subtotal - adjustment) + fee

@@ -1,0 +1,10 @@
+(* RQ1-04: Threshold after a discontinuous update.
+   Parameter protocol: 0 < theta < 1.
+   One genuine jump: s = theta for theta < 0.4;
+   s = 0.4 for 0.4 <= theta <= 0.6;
+   s = theta - 0.2 for theta > 0.6.
+   The earlier switching surface matters even when x never equals theta. *)
+
+let s = uniform(0, 1) in
+let x = if s < 0.4 then s else s + 0.2 in
+if x < theta then 1.0 else 0.0

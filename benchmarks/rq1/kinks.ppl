@@ -1,0 +1,12 @@
+(* RQ1-08: Continuous piecewise payoff (negative control).
+   Parameter protocol: 0 < theta < 1.
+   No jump discontinuities. Three kink surfaces: s = theta, t = 0.4, u = 0.5.
+   The output is nonconstant; its continuity does not rely on cancellation. *)
+
+let s = uniform(0, 1) in
+let t = uniform(0, 1) in
+let u = uniform(0, 1) in
+let cap = if s < theta then s else theta in
+let hinge = if t > 0.4 then t - 0.4 else 0.0 in
+let tent = if u < 0.5 then u else 1.0 - u in
+cap + hinge + tent

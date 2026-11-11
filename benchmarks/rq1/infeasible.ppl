@@ -1,0 +1,18 @@
+(* RQ1-05: Infeasible branches.
+   Parameter protocol: 0 < theta < 1.
+   Genuine jumps: s = theta where t < 0.3; t = 0.3 where s < theta.
+   Other tests are excluded by sample support or the enclosing path condition.
+   Pruning may happen before boundary extraction. *)
+
+let s = uniform(0, 1) in
+let t = uniform(0, 1) in
+let outside_support =
+  if s < 0.0 then 10.0 else
+  if s > 1.0 then 20.0 else 0.0 in
+let outcome =
+  if s < theta then
+    if s > theta + 0.1 then 5.0 else
+    if t < 0.3 then 1.0 else 0.0
+  else
+    if s < theta - 0.1 then 3.0 else 0.0 in
+outcome + outside_support

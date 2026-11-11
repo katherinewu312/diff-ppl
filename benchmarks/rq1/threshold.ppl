@@ -1,0 +1,10 @@
+(* RQ1-01: Threshold payoff.
+   Parameter protocol: 0 < theta < 1.
+   Genuine jumps: s = theta (magnitude 1 + theta), t = 0.6 (magnitude 2).
+   Purpose: retain real jumps and propagate nonconstant branch values. *)
+
+let s = uniform(0, 1) in
+let t = uniform(0, 1) in
+let payoff = if s < theta then 2.0 * s + 1.0 else s in
+let bonus = if t > 0.6 then 2.0 else 0.0 in
+payoff + bonus

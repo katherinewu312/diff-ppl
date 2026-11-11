@@ -1,0 +1,12 @@
+(* RQ1-06: Coincident thresholds.
+   Parameter protocol: 0 < theta < 1; include theta = 0.6.
+   The first three tests represent the same threshold, with total jump 5.
+   The fixed threshold has jump 2. At theta = 0.6 they form one jump of 7.
+   Tests global equivalence, reversed orientation, and conditional coincidence. *)
+
+let s = uniform(0, 1) in
+let base = if s < theta then 1.0 else 0.0 in
+let scaled = if 2.0 * s < 2.0 * theta then 3.0 else 0.0 in
+let reversed = if theta <= s then 0.0 else 1.0 in
+let fixed = if s < 0.6 then 2.0 else 0.0 in
+base + scaled + reversed + fixed
