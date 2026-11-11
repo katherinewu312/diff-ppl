@@ -1,4 +1,4 @@
-"""Expectation gradients from diff_ppl schema-3 JSON; Python standard library only."""
+"""Expectation gradients from diff_ppl JSON; Monte Carlo or exact integration."""
 import argparse
 from fractions import Fraction as Q
 import json
@@ -76,8 +76,9 @@ def poly_value(poly, env, derivative=None):
 
 class Estimator:
     def __init__(self, report, parameters):
-        if report.get("schema_version") != 3:
-            raise Unsupported("Expected analyzer JSON schema_version 3")
+        # Schema 5 adds refined traces; the original value/samples remain compatible.
+        if report.get("schema_version") not in (3, 5):
+            raise Unsupported("Expected analyzer JSON schema_version 3 or 5")
         if any(b["retained"] and b["solver"] != "sat" for b in report["candidates"]):
             raise Unsupported("Retained solver-unknown boundaries are unsupported")
         self.value = report["value"]
@@ -201,7 +202,21 @@ class Estimator:
                 raise Unsupported("Boundary sample lies on another surface; change the seed")
         return value < 0
 
-    def estimate(self, draws=1000, seed=0):
+    def estimate(self, draws=1000, seed=0, backend="mc"):
+        if backend not in ("mc", "exact", "auto"):
+            raise ValueError("Unknown backend: " + backend)
+        fallback_reason = None
+        if backend != "mc":
+            if __package__:
+                from .exact import integrate_exact
+            else:
+                from exact import integrate_exact
+            try:
+                return integrate_exact(self, Unsupported, number, poly_value)
+            except Unsupported as error:
+                if backend == "exact":
+                    raise
+                fallback_reason = str(error)
         if draws < 2:
             raise ValueError("At least two draws are required for standard errors")
         rng = random.Random(seed)
@@ -240,7 +255,8 @@ class Estimator:
             return {name: {"mean": statistics.fmean(row[k] for row in rows),
                            "standard_error": statistics.stdev(row[k] for row in rows) / math.sqrt(draws)}
                     for k, name in enumerate(self.names)}
-        return {"draws": draws, "seed": seed, "surfaces": len(self.boundaries),
+        return {"backend": "mc", "fallback_reason": fallback_reason,
+                "draws": draws, "seed": seed, "surfaces": len(self.boundaries),
                 "gradient": summary(total), "interior": summary(interior), "boundary": summary(boundary)}
 
 
@@ -250,6 +266,8 @@ def main():
     parser.add_argument("--at", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--draws", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--backend", choices=("mc", "exact", "auto"), default="mc",
+                        help="Integration backend (default: mc); auto tries exact then falls back to mc")
     args = parser.parse_args()
     try:
         parameters = dict(item.split("=", 1) for item in args.at)
@@ -264,15 +282,23 @@ def main():
             with source.open() as stream:
                 report = json.load(stream)
         estimator = Estimator(report, parameters)
-        result = estimator.estimate(args.draws, args.seed)
-        print(f"Expectation gradient ({result['draws']} draws, {result['surfaces']} boundary surfaces, seed {result['seed']})")
+        result = estimator.estimate(args.draws, args.seed, args.backend)
+        if result["backend"] == "exact":
+            print(f"Expectation gradient (exact backend, {result['surfaces']} boundary surfaces)")
+        else:
+            print(f"Expectation gradient ({result['draws']} draws, {result['surfaces']} boundary surfaces, seed {result['seed']})")
+            if result["fallback_reason"]:
+                print("Backend: mc (auto fallback: " + result["fallback_reason"] + ")")
         if not estimator.names:
             print("No parameters to differentiate.")
         for name in estimator.names:
             print(f"\n{name} = {float(estimator.parameters[name]):.6g}")
             for key, label in (("gradient", "Gradient"), ("interior", "Interior"), ("boundary", "Boundary")):
                 estimate = result[key][name]
-                print(f"  {label:8s} {estimate['mean']:.6g}  (standard error {estimate['standard_error']:.3g})")
+                if result["backend"] == "exact":
+                    print(f"  {label:8s} {estimate['exact']}  (approximately {estimate['mean']:.6g})")
+                else:
+                    print(f"  {label:8s} {estimate['mean']:.6g}  (standard error {estimate['standard_error']:.3g})")
     except subprocess.CalledProcessError as error:
         parser.exit(2, f"gradient: analyzer failed\n{error.stderr}")
     except (ValueError, ArithmeticError, KeyError, OSError) as error:
