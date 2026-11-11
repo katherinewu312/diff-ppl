@@ -15,6 +15,7 @@ from pathlib import Path
 SUITE = Path(__file__).resolve().parent
 ROOT = SUITE.parent.parent
 ANALYZER = ROOT / "_build/default/bin/main.exe"
+RESULTS = SUITE / "results"
 STATUSES = ("sat", "unsat", "redundant", "unknown")
 PROGRAM_ORDER = ("threshold", "cancellation", "gated", "piecewise",
                  "infeasible", "coincident", "crossing", "kinks")
@@ -105,7 +106,8 @@ def main():
     parser.add_argument("--solver-timeout-ms", type=int, default=1000)
     parser.add_argument("--timeout", type=float, default=60,
                         help="Wall-time limit per analyzer process in seconds (default: 60)")
-    parser.add_argument("--csv", type=Path, metavar="PATH", help="Optionally save one summary CSV")
+    parser.add_argument("--csv", type=Path, metavar="PATH", default=RESULTS / "rq1.csv",
+                        help="Summary CSV path (default: results/rq1.csv next to this script)")
     parser.add_argument("--boundaries", nargs="?", const="retained",
                         choices=("retained", "all"),
                         help="Print retained boundary records, or use '--boundaries all' to include dropped records")
@@ -160,16 +162,15 @@ def main():
                 print(f"{program.name:<{program_width}} {label:<10} ERROR", flush=True)
                 print(f"{program.name} (theta={label}): {error}", file=sys.stderr)
             rows.append(row)
-    if args.csv:
-        fields = ["program", "theta", "extracted", "retained", *STATUSES,
-                  "time_s", "min_s", "max_s", "runs", "warmups", "solver_timeout_ms",
-                  "timeout_s", "status", "error"]
-        args.csv.parent.mkdir(parents=True, exist_ok=True)
-        with args.csv.open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(rows)
-        print("Saved " + str(args.csv))
+    fields = ["program", "theta", "extracted", "retained", *STATUSES,
+              "time_s", "min_s", "max_s", "runs", "warmups", "solver_timeout_ms",
+              "timeout_s", "status", "error"]
+    args.csv.parent.mkdir(parents=True, exist_ok=True)
+    with args.csv.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    print("Saved " + str(args.csv))
     return int(failed)
 
 

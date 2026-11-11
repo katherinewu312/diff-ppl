@@ -48,7 +48,7 @@ python3 benchmarks/rq1/run.py --boundaries
 python3 benchmarks/rq1/run.py --boundaries all
 
 # Concrete parameter sweep with repeated measurements; save one CSV.
-python3 benchmarks/rq1/run.py --theta 0.2 0.4 0.5 0.6 0.8 --runs 5 --warmups 1 --csv benchmarks/results/rq1.csv
+python3 benchmarks/rq1/run.py --theta 0.2 0.4 0.5 0.6 0.8 --runs 5 --warmups 1
 ```
 
 The table shows extracted/retained records, SAT, UNSAT, REDUNDANT, UNKNOWN,
@@ -61,8 +61,9 @@ minimum/maximum times and the run settings.
 `--solver-timeout-ms` sets the timeout per SMT query (default 1000 ms).
 `--timeout` limits each whole analyzer process (default 60 seconds). Errors
 are reported separately from solver UNKNOWN results; the runner continues
-through the suite and exits unsuccessfully if any case fails. No result files
-are created unless `--csv` is supplied.
+through the suite and exits unsuccessfully if any case fails. Every run saves
+one summary CSV to `benchmarks/rq1/results/rq1.csv` (overwritten each run);
+use `--csv PATH` to write it elsewhere.
 
 ## Cases and ground truth
 
@@ -80,7 +81,7 @@ are determined by the comparisons in the program.
 | RQ1-04 | [piecewise.ppl](piecewise.ppl) | **Threshold after a discontinuous update:** a conditional value in another guard | Exactly one jump, magnitude `1`: `s = theta` if `theta < 0.4`; `s = 0.4` if `0.4 <= theta <= 0.6`; `s = theta - 0.2` if `theta > 0.6`. |
 | RQ1-05 | [infeasible.ppl](infeasible.ppl) | **Infeasible branches:** sample-support constraints and enclosing path conditions | `s = theta` for `t < 0.3`, and `t = 0.3` for `s < theta`; both have magnitude `1`. Other tests produce no jumps. |
 | RQ1-06 | [coincident.ppl](coincident.ppl) | **Coincident thresholds:** scaled/reversed predicates and parameter-specific coincidence | If `theta != 0.6`: `s = theta`, magnitude `5`, and `s = 0.6`, magnitude `2`. If `theta = 0.6`: one surface `s = 0.6`, magnitude `7`. |
-| RQ1-07 | [crossing.ppl](crossing.ppl) | **Intersecting surfaces:** a shared diagonal under different path conditions | `t = s` with `0 < s < theta`, magnitude `3`; `s = theta` with `t < theta`, magnitude `1`; `t = theta` with `s > theta`, magnitude `2`. |
+| RQ1-07 | [crossing.ppl](crossing.ppl) | **Intersecting surfaces:** a shared parametric diagonal under different path conditions | `t = s + theta/2` with `0 < s < theta/2`, magnitude `3`; `t = s + theta/2` with `theta/2 < s < theta`, magnitude `1`; `s = theta` with `t < 3 theta/2`, magnitude `1`; `t = theta` with `s > theta/2`, magnitude `2`. |
 | RQ1-08 | [kinks.ppl](kinks.ppl) | **Continuous piecewise payoff:** nonconstant negative control | No jumps. Kinks occur at `s = theta`, `t = 0.4`, and `u = 0.5`. |
 
 RQ1-02 is exactly equivalent to
@@ -89,28 +90,3 @@ depend on `s` or `theta`. RQ1-08 equals
 `min(s, theta) + max(t - 0.4, 0) + min(u, 1 - u)` and is continuous.
 Here `indicator(P)` is 1 when P holds and 0 otherwise; it is explanatory
 notation, not an additional language construct.
-
-## Reporting results
-
-Use a main table with extracted records, retained records, SAT, UNSAT,
-REDUNDANT, UNKNOWN, and total analysis time. Separating symbolic-evaluation and
-refinement time is useful when available. Report the parameter mode and value,
-solver version, timeout, hardware, and timing protocol.
-
-Also compare the **union of the reported surface regions and their jumps**
-against the ground truth, rather than judging correctness from record counts
-alone. Multiple records can describe parts of one surface, and a single
-symbolic record can describe different behavior at different parameters.
-For RQ1-06, check coincident contributions jointly; geometric grouping alone
-is not a guarantee about parameter-gradient weights.
-
-RQ1-05 deliberately allows pruning before candidate extraction. An impossible
-source conditional need not appear in the extracted set or in the UNSAT count.
-UNSAT is a certificate of absence of a jump on the relevant region;
-REDUNDANT describes an unnecessary record. UNKNOWN contributes no certificate
-of either presence or absence. Counts depend on the implementation's stage
-boundaries and should be measured, not prescribed by this suite.
-
-For timing, use a warm-up and repeated runs, and report a central value and
-spread. Preserve UNKNOWN outcomes and distinguish their causes rather than
-tuning programs or timeouts to obtain a preferred status distribution.

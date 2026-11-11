@@ -1,18 +1,21 @@
-(* RQ1-07: Intersecting surfaces with shared records.
-   Parameter protocol: 0 < theta < 1.
-   Genuine jumps: t = s with 0 < s < theta (magnitude 3);
-   s = theta with t < theta (magnitude 1);
-   t = theta with s > theta (magnitude 2).
-   The diagonal is introduced under two different path conditions. *)
+(* RQ1-07: Intersecting surfaces with a shared parametric diagonal.
+   Parameter protocol: 0 < theta <= 2/3.
+   Genuine jumps: t = s + theta/2 with 0 < s < theta/2 (magnitude 3);
+   t = s + theta/2 with theta/2 < s < theta (magnitude 1);
+   s = theta with t < 3 theta/2 (magnitude 1);
+   t = theta with s > theta/2 (magnitude 2).
+   The parametric diagonal is introduced under two different path conditions.
+   True gradient: 2 + 1.5 theta. *)
 
 let s = uniform(0, 1) in
 let t = uniform(0, 1) in
-let first =
+let test1 =
   if s < theta then
-    if t < s then 1.0 else 0.0
+    if t < s + 0.5 * theta then 1.0 else 0.0
   else 0.0 in
-let second =
+let test2 =
   if t < theta then
-    if s > t then 2.0 else 0.0
+    if s + 0.5 * theta > t then 2.0 else 0.0
   else 0.0 in
-first + second
+test1 + test2
+
